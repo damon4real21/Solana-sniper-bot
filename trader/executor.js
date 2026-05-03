@@ -47,7 +47,11 @@ ${filterResult.reason}`).catch(() => {});
       onlyDirectRoutes: 'false',
     });
 
-    const quoteRes = await fetch(quoteUrl, { timeout: 8000 });
+    let quoteRes, quoteAttempts = 0;
+    while (quoteAttempts < 3) {
+      try { quoteRes = await fetch(quoteUrl, { timeout: 8000 }); break; }
+      catch(e) { quoteAttempts++; if(quoteAttempts >= 3) throw e; await new Promise(r=>setTimeout(r,2000)); }
+    }
     if (!quoteRes.ok) throw new Error(`Quote failed: ${quoteRes.status}`);
     const quote = await quoteRes.json();
     if (quote.error) throw new Error(quote.error);
