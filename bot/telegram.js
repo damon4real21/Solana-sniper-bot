@@ -584,3 +584,98 @@ async function handleFreeText(msg) {
 }
 
 module.exports = { startTelegramBot, sendTelegramAlert };
+
+// ── New Feature Commands ──────────────────────────────────────────
+// These are appended to the existing telegram.js
+
+// Re-export sendTelegramAlert (already exported above)
+// Add whale commands via text
+if (typeof bot !== 'undefined' && bot) {
+  bot.onText(/\/whale (.+)/, async (msg, match) => {
+    if (!guard(msg)) return;
+    const parts = match[1].trim().split(' ');
+    const address = parts[0];
+    const label = parts[1] || 'Whale';
+    const autoBuy = parts[2] === 'auto';
+    const { addWhaleWallet } = require('../features/features16');
+    addWhaleWallet(address, label, autoBuy);
+    await sendTelegramAlert(
+      `🐳 *Whale Wallet Added*\n` +
+      `Label: *${label}*\n` +
+      `\`${address.slice(0,16)}...\`\n` +
+      `Auto-Buy: ${autoBuy ? '✅ ON' : '❌ OFF (alert only)'}\n\n` +
+      `_Usage: /whale ADDRESS LABEL auto_`
+    );
+  });
+
+  bot.onText(/\/summary/, async (msg) => {
+    if (!guard(msg)) return;
+    const { sendTradeSummary } = require('../features/features16');
+    await sendTradeSummary();
+  });
+
+  bot.onText(/\/budget (.+)/, async (msg, match) => {
+    if (!guard(msg)) return;
+    const val = parseFloat(match[1]);
+    if (isNaN(val)) return sendTelegramAlert('Usage: /budget 1.0 (SOL per day, 0 = unlimited)');
+    BotState.dailyBudgetSol = val;
+    await sendTelegramAlert(`💰 Daily budget set to *${val === 0 ? 'Unlimited' : val + ' SOL'}*`);
+  });
+
+  bot.onText(/\/mcap (.+)/, async (msg, match) => {
+    if (!guard(msg)) return;
+    const val = parseFloat(match[1]);
+    BotState.maxMarketCapUsd = val;
+    await sendTelegramAlert(`📊 Max market cap set to *${val === 0 ? 'Disabled' : '$' + val.toLocaleString()}*`);
+  });
+
+  bot.onText(/\/tokenage (.+)/, async (msg, match) => {
+    if (!guard(msg)) return;
+    const val = parseInt(match[1]);
+    BotState.maxTokenAgeSec = val;
+    await sendTelegramAlert(`⏱ Max token age set to *${val}s (${(val/60).toFixed(1)} min)*`);
+  });
+
+  bot.onText(/\/trailstop (.+)/, async (msg, match) => {
+    if (!guard(msg)) return;
+    const val = parseFloat(match[1]);
+    BotState.trailingStopPct = val;
+    await sendTelegramAlert(`📉 Trailing stop loss set to *${val}% from peak*`);
+  });
+
+  bot.onText(/\/partialtp/, async (msg) => {
+    if (!guard(msg)) return;
+    BotState.partialTP.enabled = !BotState.partialTP.enabled;
+    await sendTelegramAlert(
+      `🎯 *Partial Take Profit*: ${BotState.partialTP.enabled ? '✅ ON' : '❌ OFF'}\n\n` +
+      `Stages:\n` +
+      `• Sell 50% at 2x\n` +
+      `• Sell 25% at 5x\n` +
+      `• Sell 25% at 10x`
+    );
+  });
+
+  bot.onText(/\/honeypot/, async (msg) => {
+    if (!guard(msg)) return;
+    BotState.honeypotCheck = !BotState.honeypotCheck;
+    await sendTelegramAlert(`🍯 Honeypot detector: ${BotState.honeypotCheck ? '✅ ON' : '❌ OFF'}`);
+  });
+
+  bot.onText(/\/twitter/, async (msg) => {
+    if (!guard(msg)) return;
+    BotState.twitterCheck.enabled = !BotState.twitterCheck.enabled;
+    await sendTelegramAlert(`🐦 Twitter sentiment check: ${BotState.twitterCheck.enabled ? '✅ ON' : '❌ OFF'}`);
+  });
+
+  bot.onText(/\/briefing/, async (msg) => {
+    if (!guard(msg)) return;
+    const { sendMorningBriefing } = require('../features/features16');
+    await sendMorningBriefing();
+  });
+
+  bot.onText(/\/report/, async (msg) => {
+    if (!guard(msg)) return;
+    const { sendDailyReport } = require('../features/features16');
+    await sendDailyReport();
+  });
+}

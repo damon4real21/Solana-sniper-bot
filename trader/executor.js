@@ -1,10 +1,12 @@
 const { VersionedTransaction, LAMPORTS_PER_SOL } = require('@solana/web3.js');
 const { getConnection, getKeypair, getPublicKey, getTokenBalance } = require('../utils/wallet');
 const { sendWithMevProtection } = require('../security/mev');
-const { sendTelegramAlert } = require('../bot/telegram');
+// telegram loaded lazily to avoid circular dep
+const getTelegram = () => require('../bot/telegram');
 const { BotState } = require('../utils/state');
 const config = require('../config');
 const logger = require('../utils/logger');
+const { runAllFilters, recordSpend, recordDailyTrade, updateTrailingStop, checkTrailingStop, checkPartialTakeProfit } = require('../features/features16');
 
 const JUPITER_QUOTE_API = 'https://quote-api.jup.ag/v6';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -21,6 +23,16 @@ async function executeBuy({ mint, name, symbol, source, devWallet, liquidityUsd 
   const keypair = getKeypair();
   const pubkey = getPublicKey();
   const amountLamports = Math.floor(BotState.sniper.buyAmountSol * LAMPORTS_PER_SOL);
+
+  // Run all 16 filters
+  const filterResult = await runAllFilters({ mint, name, symbol, devWallet, liquidityUsd, priceUsd }).catch(() => ({ pass: true }));
+  if (!filterResult.pass) {
+    logger.warn(`[Filter] Skipped ${symbol}: ${filterResult.reason}`);
+    await getTelegram().sendTelegramAlert(`🚫 *Filtered*
+*${name}* (${symbol})
+${filterResult.reason}`).catch(() => {});
+    return null;
+  }
 
   logger.trade(`BUY: ${symbol} | ${source} | ${BotState.sniper.buyAmountSol} SOL`);
 
@@ -76,8 +88,9 @@ async function executeBuy({ mint, name, symbol, source, devWallet, liquidityUsd 
     }
 
     BotState.stats.sniped++;
+    recordSpend(BotState.sniper.buyAmountSol);
 
-    await sendTelegramAlert(
+    await getTelegram().sendTelegramAlert(
       `✅ *SNIPED!*\n` +
       `*${name}* (${symbol})\n` +
       `Source: ${source}\n` +
@@ -91,7 +104,7 @@ async function executeBuy({ mint, name, symbol, source, devWallet, liquidityUsd 
     return sig;
   } catch (err) {
     logger.error(`BUY failed (${symbol}):`, err.message);
-    await sendTelegramAlert(`❌ *Buy Failed*\n*${name}* (${symbol})\n${err.message}`);
+    await getTelegram().sendTelegramAlert(`❌ *Buy Failed*\n*${name}* (${symbol})\n${err.message}`);
     return null;
   }
 }
@@ -144,6 +157,7 @@ async function executeSell(mint, reason = 'Manual') {
     const pnlPct = ((pnlSol / position.buySol) * 100).toFixed(1);
     const emoji = pnlSol >= 0 ? '🟢' : '🔴';
 
+    recordDailyTrade({ mint, name: position.name, symbol: position.symbol, pnlSol, ts: Date.now() });
     BotState.addTrade({ mint, name: position.name, symbol: position.symbol, pnlSol, pnlPct, reason, sig, ts: Date.now() });
     BotState.removePosition(mint);
 
@@ -151,7 +165,7 @@ async function executeSell(mint, reason = 'Manual') {
     const { stopTrackingMint } = require('../features/devtracker');
     stopTrackingMint(mint);
 
-    await sendTelegramAlert(
+    await getTelegram().sendTelegramAlert(
       `${emoji} *SOLD!*\n` +
       `*${position.name}* (${position.symbol})\n` +
       `Reason: ${reason}\n` +
@@ -163,7 +177,7 @@ async function executeSell(mint, reason = 'Manual') {
     logger.trade(`SELL ${position.symbol} | ${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)} SOL | ${reason}`);
   } catch (err) {
     logger.error(`SELL failed (${mint?.slice(0, 8)}):`, err.message);
-    await sendTelegramAlert(`❌ *Sell Failed*\n\`${mint?.slice(0, 12)}...\`\n${err.message}`);
+    await getTelegram().sendTelegramAlert(`❌ *Sell Failed*\n\`${mint?.slice(0, 12)}...\`\n${err.message}`);
   }
 }
 
@@ -185,6 +199,28 @@ async function monitorPositions() {
 
       const multiple = currentPrice / pos.buyPrice;
       const dropPct = ((pos.buyPrice - currentPrice) / pos.buyPrice) * 100;
+
+      // Update trailing stop peak
+      updateTrailingStop(mint, currentPrice);
+
+      // Partial take profit
+      if (BotState.partialTP?.enabled) {
+        const partial = await checkPartialTakeProfit(mint, currentPrice, pos.buyPrice);
+        if (partial?.shouldSell) {
+          logger.trade(`🎯 Partial TP stage: sell ${partial.pct}% at ${partial.multiple}x`);
+          await getTelegram().sendTelegramAlert(`🎯 *Partial Take Profit!*
+*${pos.symbol}* hit ${partial.multiple}x
+Selling ${partial.pct}% of position`).catch(()=>{});
+          await executeSell(mint, `Partial TP ${partial.multiple}x (${partial.pct}%)`);
+          continue;
+        }
+      }
+
+      // Trailing stop loss
+      if (BotState.trailingStopPct > 0 && checkTrailingStop(mint, currentPrice)) {
+        await executeSell(mint, `Trailing Stop -${BotState.trailingStopPct}% from peak`);
+        continue;
+      }
 
       if (multiple >= BotState.autoSell.takeProfitMultiplier) {
         await executeSell(mint, `Take Profit ${multiple.toFixed(2)}x`);

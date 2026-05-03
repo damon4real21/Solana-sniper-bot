@@ -109,5 +109,5 @@ function getTrackedDevs() {
   return result;
 }
 
-function startDevTracker() { console.log("Dev tracker ready"); }
+function startDevTracker() { }
 module.exports = { startDevTracker, trackDevWallet, stopTrackingDev, getTrackedDevs };

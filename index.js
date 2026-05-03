@@ -6,12 +6,21 @@ const { startRaydiumListener } = require('./sniper/raydium');
 const { startCopyTrader } = require('./features/copytrader');
 const { startDevTracker } = require('./features/devtracker');
 const { startVolumeSpikeDetector } = require('./features/volumespike');
+const {
+  startDailyReport,
+  startMorningBriefing,
+  startHealthMonitor,
+  startNewsFeedMonitor,
+} = require('./features/features16');
 const { BotState } = require('./utils/state');
 const logger = require('./utils/logger');
+const http = require('http');
 
 async function main() {
-  logger.info('🚀 Solana Sniper Bot v2 starting...');
+  logger.info('🚀 SolSnipe Bot v3 starting...');
+
   BotState.init();
+  if (BotState.initExtended) BotState.initExtended();
 
   await startTelegramBot();
   logger.info('✅ Telegram bot online');
@@ -24,23 +33,26 @@ async function main() {
   startCopyTrader();
   startDevTracker();
   startVolumeSpikeDetector();
-  logger.info('✅ Feature modules active (CopyTrader | DevTracker | VolumeSpike)');
+  logger.info('✅ Core features active');
 
-  logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  logger.info('  Bot ready. Send /start in Telegram       ');
-  logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  // New features
+  startDailyReport();
+  startMorningBriefing();
+  startHealthMonitor();
+  await startNewsFeedMonitor();
+  logger.info('✅ 16 new features active');
+
+  logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  logger.info('  SolSnipe Bot v3 ready 🎯          ');
+  logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+  // Render keep-alive
+  http.createServer((req, res) => res.end('SolSnipe alive')).listen(process.env.PORT || 3000);
 
   setInterval(() => {
     const mem = process.memoryUsage();
-    logger.info(`💓 Heartbeat | Positions: ${BotState.positions.size} | Mem: ${Math.round(mem.rss/1024/1024)}MB`);
+    logger.info(`💓 Alive | Positions: ${BotState.positions.size} | Mem: ${Math.round(mem.rss/1024/1024)}MB`);
   }, 5 * 60 * 1000);
 }
 
-process.on('uncaughtException', err => logger.error('Uncaught:', err.message));
-process.on('unhandledRejection', err => logger.error('Unhandled:', err?.message || err));
-
 main();
-
-// Render keep-alive
-const http = require('http');
-http.createServer((req, res) => res.end('alive')).listen(process.env.PORT || 3000);

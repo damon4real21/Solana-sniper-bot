@@ -93,3 +93,21 @@ class BotStateManager {
 
 const BotState = new BotStateManager();
 module.exports = { BotState };
+
+// Patch: add new feature states
+const _origInit = BotStateManager.prototype.init;
+BotStateManager.prototype.initExtended = function() {
+  this.trailingStopPct = 25;
+  this.partialTP = { enabled: true, stages: [
+    { multiple: 2, sellPct: 50 },
+    { multiple: 5, sellPct: 25 },
+    { multiple: 10, sellPct: 25 },
+  ]};
+  this.dailyBudgetSol = 0; // 0 = unlimited
+  this.maxMarketCapUsd = 0; // 0 = disabled
+  this.maxTokenAgeSec = 300; // 5 min
+  this.minDeployerAgeDays = 0; // 0 = disabled
+  this.honeypotCheck = true;
+  this.twitterCheck = { enabled: false, minScore: 30 };
+  this.copyTrading = this.copyTrading || { enabled: false, wallets: new Set() };
+};
