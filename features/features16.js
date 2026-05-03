@@ -2,12 +2,12 @@
 // FEATURES MODULE — 16 new features for SolSnipe Bot
 // ═══════════════════════════════════════════════════════════════
 
-const { BotState } = require('./utils/state');
-const { sendTelegramAlert } = require('./bot/telegram');
-const { executeSell, executeBuy } = require('./trader/executor');
-const { getConnection, getSolBalance, getPublicKey } = require('./utils/wallet');
+const { BotState } = require('../utils/state');
+const { sendTelegramAlert } = require('../bot/telegram');
+const { executeSell, executeBuy } = require('../trader/executor');
+const { getConnection, getSolBalance, getPublicKey } = require('../utils/wallet');
 const { PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
-const logger = require('./utils/logger');
+const logger = require('../utils/logger');
 
 // ─────────────────────────────────────────────────────────────────
 // 1. HONEYPOT DETECTOR
@@ -558,7 +558,7 @@ const preApprovedMints = new Set();
 async function preWarmTokenAccount(mint) {
   if (preApprovedMints.has(mint)) return;
   try {
-    const { getKeypair } = require('./utils/wallet');
+    const { getKeypair } = require('../utils/wallet');
     const spl = await import('@solana/spl-token').catch(() => null);
     if (!spl) return;
 
