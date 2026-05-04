@@ -3,6 +3,7 @@ const { startTelegramBot } = require('./bot/telegram');
 const { startPumpFunListener } = require('./sniper/pumpfun');
 const { startDexScreenerListener } = require('./sniper/dexscreener');
 const { startRaydiumListener } = require('./sniper/raydium');
+const { startMigrationListener } = require('./sniper/migrations');
 const { startCopyTrader } = require('./features/copytrader');
 const { startDevTracker } = require('./features/devtracker');
 const { startVolumeSpikeDetector } = require('./features/volumespike');
@@ -22,31 +23,37 @@ async function main() {
   BotState.init();
   if (BotState.initExtended) BotState.initExtended();
 
+  // Init migration source flags
+  BotState.sources = BotState.sources || {};
+  BotState.sources.migrated = false;
+  BotState.sources.soonMigrated = false;
+  BotState.autoSnipeMigrated = false;
+  BotState.autoSnipeSoonMigrated = false;
+
   await startTelegramBot();
   logger.info('✅ Telegram bot online');
 
   startPumpFunListener();
   startDexScreenerListener();
   startRaydiumListener();
-  logger.info('✅ Core sniper listeners active');
+  startMigrationListener();
+  logger.info('✅ All sniper listeners active (+ Migration)');
 
   startCopyTrader();
   startDevTracker();
   startVolumeSpikeDetector();
   logger.info('✅ Core features active');
 
-  // New features
   startDailyReport();
   startMorningBriefing();
   startHealthMonitor();
   await startNewsFeedMonitor();
-  logger.info('✅ 16 new features active');
+  logger.info('✅ 16 features + Migration sniper active');
 
   logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   logger.info('  SolSnipe Bot v3 ready 🎯          ');
   logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-  // Render keep-alive
   http.createServer((req, res) => res.end('SolSnipe alive')).listen(process.env.PORT || 3000);
 
   setInterval(() => {

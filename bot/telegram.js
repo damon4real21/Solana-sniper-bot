@@ -75,6 +75,10 @@ function mainKeyboard() {
         { text: '🌅 Morning Briefing', callback_data: 'briefing_now' },
         { text: '📈 P&L Report', callback_data: 'report_now' },
       ],
+      [
+        { text: `🎓 Migrated ${BotState.sources?.migrated ? '✅' : '❌'}`, callback_data: 'migration_menu' },
+        { text: `⏳ Soon Migrated ${BotState.sources?.soonMigrated ? '✅' : '❌'}`, callback_data: 'soonmigrated_menu' },
+      ],
     ],
   };
 }
@@ -424,6 +428,91 @@ async function handleCallback(query) {
   // ── Trade summary ──
   if (data === 'trade_summary') {
     try { const { sendTradeSummary } = require('../features/features16'); await sendTradeSummary(); } catch (e) { await sendTelegramAlert('❌ ' + e.message); }
+    return;
+  }
+
+  // ── Migration menus ──
+  if (data === 'migration_menu') {
+    const { getMigrationStatus, enableMigrated, disableMigrated } = require('../sniper/migrations');
+    const ms = getMigrationStatus();
+    await edit(
+      `🎓 *Migrated Token Sniper*\n\n` +
+      `Catches tokens that just graduated\nfrom pump.fun → Raydium\n\n` +
+      `Status: ${ms.migrated.enabled ? '✅ ON' : '❌ OFF'}\n` +
+      `Auto-Buy: ${ms.migrated.autoBuy ? '✅ ON' : '❌ OFF'}\n` +
+      `Tokens seen: ${ms.seenMigrated}\n\n` +
+      `_Toggle below:_`,
+      {
+        inline_keyboard: [
+          [
+            { text: `${ms.migrated.enabled ? '⏹ Disable' : '▶️ Enable'} Alerts`, callback_data: 'toggle_migrated' },
+          ],
+          [
+            { text: `Auto-Buy: ${ms.migrated.autoBuy ? '✅ ON' : '❌ OFF'}`, callback_data: 'toggle_migrated_auto' },
+          ],
+          [{ text: '« Back', callback_data: 'main_menu' }],
+        ],
+      }
+    );
+    return;
+  }
+
+  if (data === 'toggle_migrated') {
+    const { getMigrationStatus, enableMigrated, disableMigrated } = require('../sniper/migrations');
+    const ms = getMigrationStatus();
+    if (ms.migrated.enabled) { disableMigrated(); await sendTelegramAlert('🎓 Migrated alerts: ❌ OFF'); }
+    else { enableMigrated(ms.migrated.autoBuy); await sendTelegramAlert('🎓 Migrated alerts: ✅ ON\nYou will get a Telegram alert with CA for every token that graduates to Raydium!'); }
+    return;
+  }
+
+  if (data === 'toggle_migrated_auto') {
+    const { getMigrationStatus, enableMigrated, disableMigrated } = require('../sniper/migrations');
+    const ms = getMigrationStatus();
+    const newAuto = !ms.migrated.autoBuy;
+    if (ms.migrated.enabled) enableMigrated(newAuto); else BotState.autoSnipeMigrated = newAuto;
+    await sendTelegramAlert(`🎓 Migrated Auto-Buy: ${newAuto ? '✅ ON — will auto-snipe graduated tokens' : '❌ OFF — alerts only'}`);
+    return;
+  }
+
+  if (data === 'soonmigrated_menu') {
+    const { getMigrationStatus } = require('../sniper/migrations');
+    const ms = getMigrationStatus();
+    await edit(
+      `⏳ *Soon-to-Migrate Sniper*\n\n` +
+      `Catches tokens with bonding curve\n70%+ full — about to graduate\n\n` +
+      `Status: ${ms.soonMigrated.enabled ? '✅ ON' : '❌ OFF'}\n` +
+      `Auto-Buy: ${ms.soonMigrated.autoBuy ? '✅ ON' : '❌ OFF'}\n` +
+      `Tokens seen: ${ms.seenSoon}\n\n` +
+      `_Threshold: 70+ SOL in bonding curve_`,
+      {
+        inline_keyboard: [
+          [
+            { text: `${ms.soonMigrated.enabled ? '⏹ Disable' : '▶️ Enable'} Alerts`, callback_data: 'toggle_soonmigrated' },
+          ],
+          [
+            { text: `Auto-Buy: ${ms.soonMigrated.autoBuy ? '✅ ON' : '❌ OFF'}`, callback_data: 'toggle_soonmigrated_auto' },
+          ],
+          [{ text: '« Back', callback_data: 'main_menu' }],
+        ],
+      }
+    );
+    return;
+  }
+
+  if (data === 'toggle_soonmigrated') {
+    const { getMigrationStatus, enableSoonMigrated, disableSoonMigrated } = require('../sniper/migrations');
+    const ms = getMigrationStatus();
+    if (ms.soonMigrated.enabled) { disableSoonMigrated(); await sendTelegramAlert('⏳ Soon-Migrated alerts: ❌ OFF'); }
+    else { enableSoonMigrated(ms.soonMigrated.autoBuy); await sendTelegramAlert('⏳ Soon-Migrated alerts: ✅ ON\nYou will get an alert with CA + bonding curve progress when a token is about to graduate!'); }
+    return;
+  }
+
+  if (data === 'toggle_soonmigrated_auto') {
+    const { getMigrationStatus, enableSoonMigrated } = require('../sniper/migrations');
+    const ms = getMigrationStatus();
+    const newAuto = !ms.soonMigrated.autoBuy;
+    if (ms.soonMigrated.enabled) enableSoonMigrated(newAuto); else BotState.autoSnipeSoonMigrated = newAuto;
+    await sendTelegramAlert(`⏳ Soon-Migrated Auto-Buy: ${newAuto ? '✅ ON' : '❌ OFF'}`);
     return;
   }
 
