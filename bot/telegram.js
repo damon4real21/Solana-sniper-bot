@@ -39,6 +39,29 @@ const KB = {
         { text: '👛 Wallet', callback_data: 'wallet' },
         { text: '🚫 Blacklist', callback_data: 'blacklist_menu' },
       ],
+      // ── New Feature Buttons ──
+      [
+        { text: '🐳 Whale Wallets', callback_data: 'whale_menu' },
+        { text: '📋 Trade Summary', callback_data: 'trade_summary' },
+      ],
+      [
+        { text: '🍯 Honeypot', callback_data: 'honeypot_toggle' },
+        { text: '🎯 Partial TP', callback_data: 'partialtp_toggle' },
+        { text: '📉 Trail Stop', callback_data: 'trail_menu' },
+      ],
+      [
+        { text: '💰 Budget', callback_data: 'budget_menu' },
+        { text: '📊 Mcap Filter', callback_data: 'mcap_menu' },
+        { text: '⏱ Token Age', callback_data: 'tokenage_menu' },
+      ],
+      [
+        { text: '🐦 Twitter Check', callback_data: 'twitter_toggle' },
+        { text: '📰 News Feed', callback_data: 'news_menu' },
+      ],
+      [
+        { text: '🌅 Briefing Now', callback_data: 'briefing_now' },
+        { text: '📈 P&L Report', callback_data: 'report_now' },
+      ],
     ],
   },
 
@@ -133,6 +156,74 @@ const KB = {
   },
 
   backToMain: { inline_keyboard: [[{ text: '« Main Menu', callback_data: 'main_menu' }]] },
+
+  // ── New Feature Keyboards ────────────────────────────────────────────────────
+
+  whale: () => ({
+    inline_keyboard: [
+      [{ text: '➕ Add Whale (Alert Only)', callback_data: 'whale_add_alert' }],
+      [{ text: '➕ Add Whale (Auto-Buy)', callback_data: 'whale_add_auto' }],
+      [{ text: '📋 List Whale Wallets', callback_data: 'whale_list' }],
+      [{ text: '➖ Remove Whale', callback_data: 'whale_remove' }],
+      [{ text: '« Back', callback_data: 'main_menu' }],
+    ],
+  }),
+
+  trail: () => ({
+    inline_keyboard: [
+      [{ text: `📉 Trailing Stop: ${BotState.trailingStopPct || 25}% from peak`, callback_data: 'trail_set' }],
+      [
+        { text: '15% (Tight)', callback_data: 'trail_15' },
+        { text: '25% (Default)', callback_data: 'trail_25' },
+        { text: '40% (Loose)', callback_data: 'trail_40' },
+      ],
+      [{ text: '« Back', callback_data: 'main_menu' }],
+    ],
+  }),
+
+  budget: () => ({
+    inline_keyboard: [
+      [{ text: `💰 Daily Budget: ${BotState.dailyBudgetSol === 0 ? 'Unlimited' : BotState.dailyBudgetSol + ' SOL'}`, callback_data: 'budget_set' }],
+      [
+        { text: '0.5 SOL/day', callback_data: 'budget_05' },
+        { text: '1 SOL/day', callback_data: 'budget_1' },
+        { text: 'Unlimited', callback_data: 'budget_0' },
+      ],
+      [{ text: '« Back', callback_data: 'main_menu' }],
+    ],
+  }),
+
+  mcap: () => ({
+    inline_keyboard: [
+      [{ text: `📊 Max Mcap: ${BotState.maxMarketCapUsd === 0 ? 'Disabled' : '$' + (BotState.maxMarketCapUsd/1000).toFixed(0) + 'k'}`, callback_data: 'mcap_set' }],
+      [
+        { text: '$100k', callback_data: 'mcap_100k' },
+        { text: '$500k', callback_data: 'mcap_500k' },
+        { text: 'Disabled', callback_data: 'mcap_0' },
+      ],
+      [{ text: '« Back', callback_data: 'main_menu' }],
+    ],
+  }),
+
+  tokenage: () => ({
+    inline_keyboard: [
+      [{ text: `⏱ Max Age: ${BotState.maxTokenAgeSec || 300}s (${((BotState.maxTokenAgeSec||300)/60).toFixed(1)} min)`, callback_data: 'tokenage_set' }],
+      [
+        { text: '60s (1 min)', callback_data: 'age_60' },
+        { text: '120s (2 min)', callback_data: 'age_120' },
+        { text: '300s (5 min)', callback_data: 'age_300' },
+      ],
+      [{ text: '« Back', callback_data: 'main_menu' }],
+    ],
+  }),
+
+  news: () => ({
+    inline_keyboard: [
+      [{ text: `📰 News Feed: ${BotState.newsFeed?.enabled ? 'ON ✅' : 'OFF ❌'}`, callback_data: 'toggle_news' }],
+      [{ text: '📰 Trending Alert — sends top 5 trending Solana tokens now', callback_data: 'news_now' }],
+      [{ text: '« Back', callback_data: 'main_menu' }],
+    ],
+  }),
 };
 
 // ── Awaiting Input State ─────────────────────────────────────────────────────
@@ -480,6 +571,10 @@ async function handleCallback(query) {
     );
     return;
   }
+
+  // ── New Feature Callbacks ──
+  const handled = await handleNewFeatureCallbacks(data, cid, msgId);
+  if (handled) return;
 }
 
 // ── Free-text Input Handler ───────────────────────────────────────────────────
@@ -574,6 +669,51 @@ async function handleFreeText(msg) {
       BotState.addBlacklist(text);
       return `🚫 Blacklisted:\n\`${text}\``;
     },
+    // New feature input handlers
+    trail_set: () => {
+      const v = parseFloat(text);
+      if (isNaN(v) || v <= 0) return '❌ Invalid';
+      BotState.trailingStopPct = v;
+      return `📉 Trailing stop set to *${v}% from peak*`;
+    },
+    budget_set: () => {
+      const v = parseFloat(text);
+      if (isNaN(v) || v < 0) return '❌ Invalid';
+      BotState.dailyBudgetSol = v;
+      return `💰 Daily budget set to *${v === 0 ? 'Unlimited' : v + ' SOL/day'}*`;
+    },
+    mcap_set: () => {
+      const v = parseFloat(text);
+      if (isNaN(v) || v < 0) return '❌ Invalid';
+      BotState.maxMarketCapUsd = v;
+      return `📊 Max market cap set to *${v === 0 ? 'Disabled' : '$' + v.toLocaleString()}*`;
+    },
+    tokenage_set: () => {
+      const v = parseInt(text);
+      if (isNaN(v) || v <= 0) return '❌ Invalid';
+      BotState.maxTokenAgeSec = v;
+      return `⏱ Max token age set to *${v}s (${(v/60).toFixed(1)} min)*`;
+    },
+    whale_add_alert: () => {
+      if (text.length < 30) return '❌ Invalid wallet address';
+      const parts = text.split(' ');
+      const address = parts[0]; const label = parts[1] || 'Whale';
+      const { addWhaleWallet } = require('../features/features16');
+      if (!BotState.whaleWallets) BotState.whaleWallets = new Map();
+      addWhaleWallet(address, label, false);
+      BotState.whaleWallets.set(address, { label, autoBuy: false });
+      return `🐳 Watching *${label}* (alert only)\n\`${address.slice(0,16)}...\``;
+    },
+    whale_add_auto: () => {
+      if (text.length < 30) return '❌ Invalid wallet address';
+      const parts = text.split(' ');
+      const address = parts[0]; const label = parts[1] || 'Whale';
+      const { addWhaleWallet } = require('../features/features16');
+      if (!BotState.whaleWallets) BotState.whaleWallets = new Map();
+      addWhaleWallet(address, label, true);
+      BotState.whaleWallets.set(address, { label, autoBuy: true });
+      return `🐳 Watching *${label}* (auto-buy ON ⚡)\n\`${address.slice(0,16)}...\``;
+    },
   };
 
   const handler = handlers[waiting.type];
@@ -581,6 +721,172 @@ async function handleFreeText(msg) {
     const result = handler();
     await sendTelegramAlert(result, { reply_markup: KB.backToMain });
   }
+}
+
+// ── New Feature Callback Handlers ─────────────────────────────────
+async function handleNewFeatureCallbacks(data, cid, msgId) {
+  const { sendTradeSummary, sendMorningBriefing, sendDailyReport, addWhaleWallet } = require('../features/features16');
+
+  // ── Trade Summary ──
+  if (data === 'trade_summary') {
+    await sendTradeSummary();
+    return true;
+  }
+
+  // ── Briefing & Report ──
+  if (data === 'briefing_now') {
+    await sendMorningBriefing();
+    return true;
+  }
+  if (data === 'report_now') {
+    await sendDailyReport();
+    return true;
+  }
+
+  // ── Honeypot Toggle ──
+  if (data === 'honeypot_toggle') {
+    BotState.honeypotCheck = !BotState.honeypotCheck;
+    await editMenu(cid, msgId,
+      `🍯 *Honeypot Detector*\n\n${BotState.honeypotCheck ? '✅ ON — simulates sell before every buy' : '❌ OFF — no honeypot simulation'}`,
+      KB.backToMain
+    );
+    return true;
+  }
+
+  // ── Partial TP Toggle ──
+  if (data === 'partialtp_toggle') {
+    if (!BotState.partialTP) BotState.partialTP = { enabled: false };
+    BotState.partialTP.enabled = !BotState.partialTP.enabled;
+    await editMenu(cid, msgId,
+      `🎯 *Partial Take Profit*: ${BotState.partialTP.enabled ? '✅ ON' : '❌ OFF'}\n\n` +
+      `Sell stages:\n• 50% at 2x\n• 25% at 5x\n• 25% at 10x`,
+      KB.backToMain
+    );
+    return true;
+  }
+
+  // ── Twitter Toggle ──
+  if (data === 'twitter_toggle') {
+    if (!BotState.twitterCheck) BotState.twitterCheck = { enabled: false };
+    BotState.twitterCheck.enabled = !BotState.twitterCheck.enabled;
+    await editMenu(cid, msgId,
+      `🐦 *Twitter/X Sentiment*: ${BotState.twitterCheck.enabled ? '✅ ON' : '❌ OFF'}\n\nChecks if token has Twitter, Telegram & website before buying.`,
+      KB.backToMain
+    );
+    return true;
+  }
+
+  // ── Trail Stop Menu ──
+  if (data === 'trail_menu') {
+    await editMenu(cid, msgId, `📉 *Trailing Stop Loss*\nSells when price drops X% from its peak.\nCurrently: *${BotState.trailingStopPct || 25}%*`, KB.trail());
+    return true;
+  }
+  if (data === 'trail_15') { BotState.trailingStopPct = 15; await editMenu(cid, msgId, '📉 Trailing stop set to *15%* (tight)', KB.trail()); return true; }
+  if (data === 'trail_25') { BotState.trailingStopPct = 25; await editMenu(cid, msgId, '📉 Trailing stop set to *25%* (default)', KB.trail()); return true; }
+  if (data === 'trail_40') { BotState.trailingStopPct = 40; await editMenu(cid, msgId, '📉 Trailing stop set to *40%* (loose)', KB.trail()); return true; }
+  if (data === 'trail_set') { awaitingInput.set(cid, { type: 'trail_set', prompt: '📉 Enter trailing stop % from peak:\n_e.g. `25` for 25%_' }); await sendTelegramAlert('📉 Enter trailing stop % from peak:'); return true; }
+
+  // ── Budget Menu ──
+  if (data === 'budget_menu') {
+    await editMenu(cid, msgId,
+      `💰 *Daily Budget Limit*\nStops buying when daily SOL spend is reached.\nCurrently: *${BotState.dailyBudgetSol === 0 ? 'Unlimited' : BotState.dailyBudgetSol + ' SOL/day'}*`,
+      KB.budget()
+    );
+    return true;
+  }
+  if (data === 'budget_05') { BotState.dailyBudgetSol = 0.5; await editMenu(cid, msgId, '💰 Budget set to *0.5 SOL/day*', KB.budget()); return true; }
+  if (data === 'budget_1') { BotState.dailyBudgetSol = 1; await editMenu(cid, msgId, '💰 Budget set to *1 SOL/day*', KB.budget()); return true; }
+  if (data === 'budget_0') { BotState.dailyBudgetSol = 0; await editMenu(cid, msgId, '💰 Budget set to *Unlimited*', KB.budget()); return true; }
+  if (data === 'budget_set') { awaitingInput.set(cid, { type: 'budget_set', prompt: '💰 Enter max SOL to spend per day:\n_e.g. `1.0` — type `0` for unlimited_' }); await sendTelegramAlert('💰 Enter daily budget in SOL (0 = unlimited):'); return true; }
+
+  // ── Mcap Menu ──
+  if (data === 'mcap_menu') {
+    await editMenu(cid, msgId,
+      `📊 *Market Cap Filter*\nSkips tokens already above this market cap.\nCurrently: *${BotState.maxMarketCapUsd === 0 ? 'Disabled' : '$' + (BotState.maxMarketCapUsd/1000).toFixed(0) + 'k'}*`,
+      KB.mcap()
+    );
+    return true;
+  }
+  if (data === 'mcap_100k') { BotState.maxMarketCapUsd = 100000; await editMenu(cid, msgId, '📊 Max mcap set to *$100k*', KB.mcap()); return true; }
+  if (data === 'mcap_500k') { BotState.maxMarketCapUsd = 500000; await editMenu(cid, msgId, '📊 Max mcap set to *$500k*', KB.mcap()); return true; }
+  if (data === 'mcap_0') { BotState.maxMarketCapUsd = 0; await editMenu(cid, msgId, '📊 Market cap filter *disabled*', KB.mcap()); return true; }
+  if (data === 'mcap_set') { awaitingInput.set(cid, { type: 'mcap_set', prompt: '📊 Enter max market cap in USD:\n_e.g. `500000` for $500k — `0` to disable_' }); await sendTelegramAlert('📊 Enter max market cap in USD:'); return true; }
+
+  // ── Token Age Menu ──
+  if (data === 'tokenage_menu') {
+    await editMenu(cid, msgId,
+      `⏱ *Token Age Filter*\nOnly snipes tokens newer than this.\nCurrently: *${BotState.maxTokenAgeSec || 300}s (${((BotState.maxTokenAgeSec||300)/60).toFixed(1)} min)*`,
+      KB.tokenage()
+    );
+    return true;
+  }
+  if (data === 'age_60') { BotState.maxTokenAgeSec = 60; await editMenu(cid, msgId, '⏱ Max token age set to *60s (1 min)*', KB.tokenage()); return true; }
+  if (data === 'age_120') { BotState.maxTokenAgeSec = 120; await editMenu(cid, msgId, '⏱ Max token age set to *120s (2 min)*', KB.tokenage()); return true; }
+  if (data === 'age_300') { BotState.maxTokenAgeSec = 300; await editMenu(cid, msgId, '⏱ Max token age set to *300s (5 min)*', KB.tokenage()); return true; }
+  if (data === 'tokenage_set') { awaitingInput.set(cid, { type: 'tokenage_set', prompt: '⏱ Enter max token age in seconds:\n_e.g. `120` for 2 minutes_' }); await sendTelegramAlert('⏱ Enter max token age in seconds:'); return true; }
+
+  // ── Whale Menu ──
+  if (data === 'whale_menu') {
+    const wallets = BotState.whaleWallets ? [...BotState.whaleWallets.entries()] : [];
+    const list = wallets.length > 0
+      ? wallets.map(([addr, d]) => `• *${d.label}* ${d.autoBuy ? '⚡' : '👁'} \`${addr.slice(0,12)}...\``).join('\n')
+      : '_No whale wallets yet_';
+    await editMenu(cid, msgId, `🐳 *Whale Wallets*\n⚡ = Auto-Buy | 👁 = Alert Only\n\n${list}`, KB.whale());
+    return true;
+  }
+  if (data === 'whale_add_alert') {
+    awaitingInput.set(cid, { type: 'whale_add_alert', prompt: '🐳 Enter wallet address and label:\n_e.g. `WALLETADDRESS AlphaSniper`_' });
+    await sendTelegramAlert('🐳 Paste wallet address (and optional label):');
+    return true;
+  }
+  if (data === 'whale_add_auto') {
+    awaitingInput.set(cid, { type: 'whale_add_auto', prompt: '🐳 Enter wallet address and label:\n_e.g. `WALLETADDRESS AlphaSniper`_\n⚡ Bot will auto-buy whatever they buy!' });
+    await sendTelegramAlert('🐳 Paste wallet address (and optional label) — will AUTO-BUY:');
+    return true;
+  }
+  if (data === 'whale_list') {
+    const wallets = BotState.whaleWallets ? [...BotState.whaleWallets.entries()] : [];
+    if (!wallets.length) { await sendTelegramAlert('🐳 No whale wallets added yet'); return true; }
+    const list = wallets.map(([addr, d], i) => `${i+1}. *${d.label}* ${d.autoBuy ? '⚡ Auto-Buy' : '👁 Alert'}\n   \`${addr}\``).join('\n\n');
+    await sendTelegramAlert(`🐳 *Whale Wallets*\n\n${list}`);
+    return true;
+  }
+  if (data === 'whale_remove') {
+    awaitingInput.set(cid, { type: 'whale_remove_addr', prompt: '🐳 Enter wallet address to remove:' });
+    await sendTelegramAlert('🐳 Paste the wallet address to remove:');
+    return true;
+  }
+
+  // ── News Feed Menu ──
+  if (data === 'news_menu') {
+    if (!BotState.newsFeed) BotState.newsFeed = { enabled: false };
+    await editMenu(cid, msgId, '📰 *News Feed Monitor*\nTracks trending tokens and social signals.', KB.news());
+    return true;
+  }
+  if (data === 'toggle_news') {
+    if (!BotState.newsFeed) BotState.newsFeed = { enabled: false };
+    BotState.newsFeed.enabled = !BotState.newsFeed.enabled;
+    await editMenu(cid, msgId, `📰 News Feed: ${BotState.newsFeed.enabled ? '✅ ON' : '❌ OFF'}`, KB.news());
+    return true;
+  }
+  if (data === 'news_now') {
+    await sendTelegramAlert('📰 Fetching trending tokens...');
+    try {
+      const fetch = (await import('node-fetch')).default;
+      const res = await fetch('https://api.dexscreener.com/token-boosts/top/v1', { timeout: 6000 });
+      const boosts = await res.json();
+      const sol = (boosts || []).filter(b => b.chainId === 'solana').slice(0, 5);
+      if (!sol.length) { await sendTelegramAlert('📰 No trending Solana tokens right now'); return true; }
+      let msg = '📰 *Top Trending Solana Tokens*\n\n';
+      sol.forEach((b, i) => {
+        msg += `${i+1}. *${b.description || 'Unknown'}*\n   \`${b.tokenAddress?.slice(0,20)}...\`\n   [DexScreener](https://dexscreener.com/solana/${b.tokenAddress})\n\n`;
+      });
+      await sendTelegramAlert(msg);
+    } catch (e) { await sendTelegramAlert('📰 Could not fetch trending tokens'); }
+    return true;
+  }
+
+  return false; // not handled here
 }
 
 module.exports = { startTelegramBot, sendTelegramAlert };

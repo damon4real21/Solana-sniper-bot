@@ -2,12 +2,12 @@
 // FEATURES MODULE — 16 new features for SolSnipe Bot
 // ═══════════════════════════════════════════════════════════════
 
-const { BotState } = require('./utils/state');
-const { sendTelegramAlert } = require('./bot/telegram');
-const { executeSell, executeBuy } = require('./trader/executor');
-const { getConnection, getSolBalance, getPublicKey } = require('./utils/wallet');
+const { BotState } = require('../utils/state');
+const { sendTelegramAlert } = require('../bot/telegram');
+const { executeSell, executeBuy } = require('../trader/executor');
+const { getConnection, getSolBalance, getPublicKey } = require('../utils/wallet');
 const { PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
-const logger = require('./utils/logger');
+const logger = require('../utils/logger');
 
 // ─────────────────────────────────────────────────────────────────
 // 1. HONEYPOT DETECTOR
@@ -15,7 +15,8 @@ const logger = require('./utils/logger');
 // ─────────────────────────────────────────────────────────────────
 async function checkHoneypot(mint) {
   try {
-    const fetch = (await import('node-fetch')).default;
+    const { resilientFetch } = require('../utils/fetcher');
+    const fetch = async (url, opts) => resilientFetch(url, opts, 2);
     // Use Jupiter to simulate a sell quote — if it fails token is likely a honeypot
     const res = await fetch(
       `https://quote-api.jup.ag/v6/quote?inputMint=${mint}&outputMint=So11111111111111111111111111111111111111112&amount=1000000&slippageBps=5000`,
@@ -248,7 +249,8 @@ const newsMentions = new Map(); // mint/symbol -> count
 
 async function checkNewsFeed(symbol, mint) {
   try {
-    const fetch = (await import('node-fetch')).default;
+    const { resilientFetch } = require('../utils/fetcher');
+    const fetch = async (url, opts) => resilientFetch(url, opts, 2);
     // Check DexScreener social data for the token
     const res = await fetch(
       `https://api.dexscreener.com/latest/dex/tokens/${mint}`,
@@ -290,7 +292,8 @@ async function startNewsFeedMonitor() {
   setInterval(async () => {
     if (!BotState.sniping) return;
     try {
-      const fetch = (await import('node-fetch')).default;
+      const { resilientFetch } = require('../utils/fetcher');
+    const fetch = async (url, opts) => resilientFetch(url, opts, 2);
       const res = await fetch('https://api.dexscreener.com/token-boosts/top/v1', { timeout: 6000 });
       if (!res.ok) return;
       const boosts = await res.json();
@@ -458,7 +461,8 @@ async function checkLiquidityLock(mint) {
   if (minLockDays === 0) return { locked: true, reason: 'Lock check disabled (min=0)' };
 
   try {
-    const fetch = (await import('node-fetch')).default;
+    const { resilientFetch } = require('../utils/fetcher');
+    const fetch = async (url, opts) => resilientFetch(url, opts, 2);
     // Check via Streamflow API
     const res = await fetch(
       `https://api.streamflow.finance/v2/api/streams?mint=${mint}&cluster=mainnet`,
@@ -490,7 +494,8 @@ async function checkLiquidityLock(mint) {
 async function checkTwitterSentiment(symbol, mint) {
   if (!BotState.twitterCheck?.enabled) return { ok: true, reason: 'Twitter check disabled' };
   try {
-    const fetch = (await import('node-fetch')).default;
+    const { resilientFetch } = require('../utils/fetcher');
+    const fetch = async (url, opts) => resilientFetch(url, opts, 2);
     // Use DexScreener social info as Twitter proxy (free, no API key needed)
     const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { timeout: 5000 });
     const data = await res.json();
@@ -531,7 +536,8 @@ async function checkMarketCap(mint, priceUsd) {
   if (!priceUsd || priceUsd === 0) return { ok: true, reason: 'No price data' };
 
   try {
-    const fetch = (await import('node-fetch')).default;
+    const { resilientFetch } = require('../utils/fetcher');
+    const fetch = async (url, opts) => resilientFetch(url, opts, 2);
     const conn = getConnection();
     const mintInfo = await conn.getParsedAccountInfo(new PublicKey(mint));
     const supply = parseFloat(mintInfo.value?.data?.parsed?.info?.supply || '0');
@@ -558,7 +564,7 @@ const preApprovedMints = new Set();
 async function preWarmTokenAccount(mint) {
   if (preApprovedMints.has(mint)) return;
   try {
-    const { getKeypair } = require('./utils/wallet');
+    const { getKeypair } = require('../utils/wallet');
     const spl = await import('@solana/spl-token').catch(() => null);
     if (!spl) return;
 
