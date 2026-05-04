@@ -98,7 +98,7 @@ async function checkRugRisk(mintAddress, metadata = {}) {
       logger.rug(`Token ${mintAddress.slice(0, 8)}... failed rug check (score: ${riskScore})`);
     }
 
-    return { safe, score: riskScore, reasons };
+    return { safe, score: riskScore, reasons, mint: mintAddress };
   } catch (err) {
     logger.error('RugCheck error:', err.message);
     return { safe: false, score: 100, reasons: [`Error checking token: ${err.message}`] };

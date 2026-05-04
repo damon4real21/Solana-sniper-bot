@@ -37,6 +37,20 @@ async function executeBuy({ mint, name, symbol, source, devWallet, liquidityUsd 
 
   logger.trade(`BUY: ${symbol} | ${source} | ${BotState.sniper.buyAmountSol} SOL`);
 
+  // 🔔 Pre-buy alert with full CA details
+  await getTelegram().sendTelegramAlert(
+    `⚡ *Attempting Buy...*\n\n` +
+    `*${name}* (${symbol})\n` +
+    `Source: ${source}\n` +
+    `Spending: *${BotState.sniper.buyAmountSol} SOL*\n\n` +
+    `📋 *Contract Address (CA):*\n` +
+    `\`${mint}\`\n\n` +
+    `🔗 [DexScreener](https://dexscreener.com/solana/${mint}) | [Solscan](https://solscan.io/token/${mint})\n` +
+    `[pump.fun](https://pump.fun/${mint}) | [Birdeye](https://birdeye.so/token/${mint})\n\n` +
+    `Rug Score: ${rugScore}/100 | Liq: $${liquidityUsd.toFixed(0)}\n` +
+    `_Processing swap..._`
+  ).catch(() => {});
+
   try {
     const jupBase = getJupiterBase();
     const quoteUrl = `${jupBase}/quote?` + new URLSearchParams({
