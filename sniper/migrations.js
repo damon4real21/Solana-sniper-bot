@@ -10,6 +10,7 @@ const { checkRugRisk } = require('../security/rugcheck');
 const { executeBuy } = require('../trader/executor');
 const { sendTelegramAlert } = require('../bot/telegram');
 const { resilientFetch } = require('../utils/fetcher');
+const { getBubbleMapAnalysis, formatBubbleMapAlert, isBubbleMapRisky } = require('../security/bubblemaps');
 const logger = require('../utils/logger');
 
 // pump.fun bonding curve graduation threshold (SOL)
@@ -198,11 +199,24 @@ async function processMigratedToken(mint, data) {
     }
   } catch (_) {}
 
-  // Rug check
-  const rugResult = await checkRugRisk(mint, { liquidityUsd });
+  // Rug check + BubbleMaps in parallel
+  const [rugResult, bubbleAnalysis] = await Promise.allSettled([
+    checkRugRisk(mint, { liquidityUsd }),
+    getBubbleMapAnalysis(mint),
+  ]);
 
-  // Alert — always show even if rug check fails
-  const rugEmoji = rugResult.score < 30 ? '🟢' : rugResult.score < 60 ? '🟡' : '🔴';
+  const rug = rugResult.status === 'fulfilled' ? rugResult.value : { safe: true, score: 0, reasons: [] };
+  const bubble = bubbleAnalysis.status === 'fulfilled' ? bubbleAnalysis.value : null;
+  const bubbleText = bubble ? formatBubbleMapAlert(bubble) : '🫧 BubbleMaps: unavailable';
+
+  const rugEmoji = rug.score < 30 ? '🟢' : rug.score < 60 ? '🟡' : '🔴';
+
+  // Check bubble risk gate
+  const bubbleRisky = bubble && isBubbleMapRisky(bubble, {
+    maxClusterPct: BotState.bubbleMapSettings?.maxClusterPct || 50,
+    minDecentScore: BotState.bubbleMapSettings?.minDecentScore || 0,
+    maxTop1Pct: BotState.bubbleMapSettings?.maxTop1Pct || 30,
+  });
 
   await sendTelegramAlert(
     `🎓 *MIGRATED to Raydium!*\n` +
@@ -211,10 +225,11 @@ async function processMigratedToken(mint, data) {
     `📋 *CA:*\n\`${mint}\`\n\n` +
     `💧 Liquidity: $${liquidityUsd.toFixed(0)}\n` +
     `📊 Market Cap: $${marketCap > 0 ? (marketCap/1000).toFixed(0)+'k' : 'N/A'}\n` +
-    `${rugEmoji} Rug Score: ${rugResult.score}/100\n\n` +
+    `${rugEmoji} Rug Score: ${rug.score}/100\n\n` +
     `🔗 [DexScreener](https://dexscreener.com/solana/${mint}) | [Solscan](https://solscan.io/token/${mint})\n` +
     `[pump.fun](https://pump.fun/${mint}) | [Birdeye](https://birdeye.so/token/${mint})\n\n` +
-    `${rugResult.safe ? '✅ Passed rug check — sniping...' : `⚠️ Rug risk detected — skipping auto-buy\n${rugResult.reasons.slice(0,2).map(r=>`• ${r}`).join('\n')}`}`
+    bubbleText + `\n\n` +
+    `${bubbleRisky ? '🚫 *BubbleMaps risk gate triggered — skipping*' : rug.safe ? '✅ Passed all checks — sniping...' : `⚠️ Rug risk — skipping\n${rug.reasons.slice(0,2).map(r=>'• '+r).join('\n')}`}`
   );
 
   if (!rugResult.safe) return;
@@ -254,9 +269,22 @@ async function processSoonMigratedToken(mint, name, symbol, solInCurve, fillPct)
   const filled = Math.round(fillPct / 10);
   const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
 
-  // Rug check
-  const rugResult = await checkRugRisk(mint, { liquidityUsd });
-  const rugEmoji = rugResult.score < 30 ? '🟢' : rugResult.score < 60 ? '🟡' : '🔴';
+  // Rug check + BubbleMaps in parallel
+  const [rugResult, bubbleAnalysis] = await Promise.allSettled([
+    checkRugRisk(mint, { liquidityUsd }),
+    getBubbleMapAnalysis(mint),
+  ]);
+
+  const rug = rugResult.status === 'fulfilled' ? rugResult.value : { safe: true, score: 0, reasons: [] };
+  const bubble = bubbleAnalysis.status === 'fulfilled' ? bubbleAnalysis.value : null;
+  const bubbleText = bubble ? formatBubbleMapAlert(bubble) : '🫧 BubbleMaps: loading...';
+  const rugEmoji = rug.score < 30 ? '🟢' : rug.score < 60 ? '🟡' : '🔴';
+
+  const bubbleRisky = bubble && isBubbleMapRisky(bubble, {
+    maxClusterPct: BotState.bubbleMapSettings?.maxClusterPct || 50,
+    minDecentScore: BotState.bubbleMapSettings?.minDecentScore || 0,
+    maxTop1Pct: BotState.bubbleMapSettings?.maxTop1Pct || 30,
+  });
 
   await sendTelegramAlert(
     `⏳ *SOON TO MIGRATE!*\n` +
@@ -266,13 +294,11 @@ async function processSoonMigratedToken(mint, name, symbol, solInCurve, fillPct)
     `🎯 Bonding Curve: *${fillPct.toFixed(0)}%* full\n` +
     `[${bar}] ${solInCurve.toFixed(1)}/${GRADUATION_THRESHOLD_SOL} SOL\n\n` +
     `💧 Liquidity: $${liquidityUsd.toFixed(0)}\n` +
-    `${rugEmoji} Rug Score: ${rugResult.score}/100\n\n` +
+    `${rugEmoji} Rug Score: ${rug.score}/100\n\n` +
+    bubbleText + `\n\n` +
     `🔗 [DexScreener](https://dexscreener.com/solana/${mint}) | [pump.fun](https://pump.fun/${mint})\n` +
     `[Birdeye](https://birdeye.so/token/${mint}) | [Solscan](https://solscan.io/token/${mint})\n\n` +
-    `${rugResult.safe
-      ? (BotState.autoSnipeSoonMigrated ? '✅ Auto-buying now!' : '⚡ _Tap to manually snipe_')
-      : `⚠️ Rug risk — monitoring only\n${rugResult.reasons.slice(0,2).map(r=>`• ${r}`).join('\n')}`
-    }`
+    `${bubbleRisky ? '🚫 BubbleMaps flagged — high cluster risk' : rug.safe ? (BotState.autoSnipeSoonMigrated ? '✅ Auto-buying now!' : '⚡ _Review above then buy manually_') : `⚠️ Rug risk — monitor only\n${rug.reasons.slice(0,2).map(r=>'• '+r).join('\n')}`}`
   );
 
   if (!rugResult.safe) return;

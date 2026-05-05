@@ -79,6 +79,9 @@ function mainKeyboard() {
         { text: `🎓 Migrated ${BotState.sources?.migrated ? '✅' : '❌'}`, callback_data: 'migration_menu' },
         { text: `⏳ Soon Migrated ${BotState.sources?.soonMigrated ? '✅' : '❌'}`, callback_data: 'soonmigrated_menu' },
       ],
+      [
+        { text: '🫧 BubbleMaps Settings', callback_data: 'bubblemap_menu' },
+      ],
     ],
   };
 }
@@ -516,6 +519,58 @@ async function handleCallback(query) {
     return;
   }
 
+  // ── BubbleMaps settings ──
+  if (data === 'bubblemap_menu') {
+    if (!BotState.bubbleMapSettings) BotState.bubbleMapSettings = { maxClusterPct: 50, minDecentScore: 0, maxTop1Pct: 30, blockRisky: false };
+    const bm = BotState.bubbleMapSettings;
+    await edit(
+      `🫧 *BubbleMaps Settings*\n\n` +
+      `Checks connected wallets and cluster risk\nfor every migrated + soon-migrated token\n\n` +
+      `*Current Limits:*\n` +
+      `Max cluster % (skip if exceeded): *${bm.maxClusterPct}%*\n` +
+      `Max #1 holder %: *${bm.maxTop1Pct}%*\n` +
+      `Min decentralization score: *${bm.minDecentScore}/100*\n` +
+      `Block risky tokens: *${bm.blockRisky ? '✅ ON' : '❌ OFF'}*\n\n` +
+      `_Tap a setting to change it:_`,
+      {
+        inline_keyboard: [
+          [
+            { text: `🕸 Max Cluster: ${bm.maxClusterPct}%`, callback_data: 'set_bm_cluster' },
+            { text: `👤 Max #1 Holder: ${bm.maxTop1Pct}%`, callback_data: 'set_bm_top1' },
+          ],
+          [
+            { text: `📊 Min Score: ${bm.minDecentScore}`, callback_data: 'set_bm_score' },
+            { text: `🚫 Block Risky: ${bm.blockRisky ? '✅' : '❌'}`, callback_data: 'toggle_bm_block' },
+          ],
+          [{ text: '« Back', callback_data: 'main_menu' }],
+        ],
+      }
+    );
+    return;
+  }
+
+  if (data === 'toggle_bm_block') {
+    if (!BotState.bubbleMapSettings) BotState.bubbleMapSettings = { maxClusterPct: 50, minDecentScore: 0, maxTop1Pct: 30, blockRisky: false };
+    BotState.bubbleMapSettings.blockRisky = !BotState.bubbleMapSettings.blockRisky;
+    await sendTelegramAlert(
+      BotState.bubbleMapSettings.blockRisky
+        ? '🫧 BubbleMaps gate: ✅ ON\nTokens with risky clusters will be *blocked* from auto-buy'
+        : '🫧 BubbleMaps gate: ❌ OFF\nBubbleMaps shows info only — does not block buys'
+    );
+    return;
+  }
+
+  if (['set_bm_cluster','set_bm_top1','set_bm_score'].includes(data)) {
+    const prompts = {
+      set_bm_cluster: 'Enter max cluster % (skip token if connected wallets hold more than this):\n_e.g. `50` — skip if cluster > 50%_',
+      set_bm_top1: 'Enter max % for single top holder:\n_e.g. `30` — skip if #1 wallet > 30%_',
+      set_bm_score: 'Enter minimum decentralization score (0=disabled):\n_e.g. `40` — skip if score below 40_',
+    };
+    awaitingInput.set(cid, { type: data });
+    await sendTelegramAlert(prompts[data]);
+    return;
+  }
+
   // ── Briefing & Report ──
   if (data === 'briefing_now') {
     try { const { sendMorningBriefing } = require('../features/features16'); await sendMorningBriefing(); } catch (e) { await sendTelegramAlert('❌ ' + e.message); }
@@ -561,6 +616,27 @@ async function handleFreeText(msg) {
       return `👥 Now mirroring:\n\`${text.slice(0,20)}...\``;
     },
     vol_menu: () => { const v = parseFloat(text); if (!isNaN(v)) { if (!BotState.volumeSpike) BotState.volumeSpike = {}; BotState.volumeSpike.minVolume1h = v; return `✅ Min Volume: *$${v}*`; } return '❌ Invalid'; },
+    set_bm_cluster: () => {
+      const v = parseFloat(text);
+      if (isNaN(v) || v < 0 || v > 100) return '❌ Enter a number between 0-100';
+      if (!BotState.bubbleMapSettings) BotState.bubbleMapSettings = {};
+      BotState.bubbleMapSettings.maxClusterPct = v;
+      return `✅ Max cluster: *${v}%*\nTokens where connected wallets hold >${v}% will be flagged`;
+    },
+    set_bm_top1: () => {
+      const v = parseFloat(text);
+      if (isNaN(v)) return '❌ Invalid';
+      if (!BotState.bubbleMapSettings) BotState.bubbleMapSettings = {};
+      BotState.bubbleMapSettings.maxTop1Pct = v;
+      return `✅ Max #1 holder: *${v}%*`;
+    },
+    set_bm_score: () => {
+      const v = parseFloat(text);
+      if (isNaN(v)) return '❌ Invalid';
+      if (!BotState.bubbleMapSettings) BotState.bubbleMapSettings = {};
+      BotState.bubbleMapSettings.minDecentScore = v;
+      return `✅ Min decentralization score: *${v}*\n${v === 0 ? 'Score gate disabled' : `Tokens scoring below ${v} will be flagged`}`;
+    },
     mw_menu: () => {
       if (text.length < 40) return '❌ Invalid key';
       try { const { addSubWallet } = require('../features/multiwallet'); const r = addSubWallet(text, `W${Date.now()}`); return r.success ? `✅ Sub-wallet added` : `❌ ${r.reason}`; } catch (_) { return '❌ Error adding wallet'; }
