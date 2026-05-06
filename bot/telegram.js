@@ -4,6 +4,8 @@ const { executeSell } = require('../trader/executor');
 const { getSolBalance, getPublicKey } = require('../utils/wallet');
 const config = require('../config');
 const logger = require('../utils/logger');
+const { saveSettings } = require('../utils/persistence');
+const save = () => saveSettings(BotState);
 
 let bot = null;
 const chatId = config.telegram.chatId;
@@ -269,7 +271,7 @@ async function handleCallback(query) {
   }
 
   // ── Toggle snipe (START / STOP) ──
-  if (data === 'toggle_snipe') {
+  if (data === 'toggle_snipe') { save();
     BotState.sniping = !BotState.sniping;
     if (BotState.sniping) {
       await edit(
@@ -369,18 +371,18 @@ async function handleCallback(query) {
 
   // ── Sources ──
   if (data === 'sources_menu') { await edit('📡 *Sources* — tap to toggle:', sourcesKeyboard()); return; }
-  if (data === 'toggle_pumpfun') { BotState.sources.pumpfun = !BotState.sources.pumpfun; await edit(`pump.fun: ${BotState.sources.pumpfun ? '✅ ON' : '❌ OFF'}`, sourcesKeyboard()); return; }
-  if (data === 'toggle_dexscreener') { BotState.sources.dexscreener = !BotState.sources.dexscreener; await edit(`DexScreener: ${BotState.sources.dexscreener ? '✅ ON' : '❌ OFF'}`, sourcesKeyboard()); return; }
-  if (data === 'toggle_raydium') { BotState.sources.raydium = !BotState.sources.raydium; await edit(`Raydium: ${BotState.sources.raydium ? '✅ ON' : '❌ OFF'}`, sourcesKeyboard()); return; }
+  if (data === 'toggle_pumpfun') { save(); BotState.sources.pumpfun = !BotState.sources.pumpfun; await edit(`pump.fun: ${BotState.sources.pumpfun ? '✅ ON' : '❌ OFF'}`, sourcesKeyboard()); return; }
+  if (data === 'toggle_dexscreener') { save(); BotState.sources.dexscreener = !BotState.sources.dexscreener; await edit(`DexScreener: ${BotState.sources.dexscreener ? '✅ ON' : '❌ OFF'}`, sourcesKeyboard()); return; }
+  if (data === 'toggle_raydium') { save(); BotState.sources.raydium = !BotState.sources.raydium; await edit(`Raydium: ${BotState.sources.raydium ? '✅ ON' : '❌ OFF'}`, sourcesKeyboard()); return; }
 
   // ── Settings ──
   if (data === 'settings_menu') { await edit('⚙️ *Settings* — tap to change:', settingsKeyboard()); return; }
-  if (data === 'toggle_autosell') { BotState.autoSell.enabled = !BotState.autoSell.enabled; await edit(`Auto-Sell: ${BotState.autoSell.enabled ? '✅ ON' : '❌ OFF'}`, settingsKeyboard()); return; }
-  if (data === 'toggle_mint') { BotState.rugFilter.requireMintRenounced = !BotState.rugFilter.requireMintRenounced; await edit(`Mint Renounced: ${BotState.rugFilter.requireMintRenounced ? '✅' : '❌'}`, settingsKeyboard()); return; }
-  if (data === 'toggle_freeze') { BotState.rugFilter.requireFreezeRenounced = !BotState.rugFilter.requireFreezeRenounced; await edit(`Freeze Renounced: ${BotState.rugFilter.requireFreezeRenounced ? '✅' : '❌'}`, settingsKeyboard()); return; }
+  if (data === 'toggle_autosell') { save(); BotState.autoSell.enabled = !BotState.autoSell.enabled; await edit(`Auto-Sell: ${BotState.autoSell.enabled ? '✅ ON' : '❌ OFF'}`, settingsKeyboard()); return; }
+  if (data === 'toggle_mint') { save(); BotState.rugFilter.requireMintRenounced = !BotState.rugFilter.requireMintRenounced; await edit(`Mint Renounced: ${BotState.rugFilter.requireMintRenounced ? '✅' : '❌'}`, settingsKeyboard()); return; }
+  if (data === 'toggle_freeze') { save(); BotState.rugFilter.requireFreezeRenounced = !BotState.rugFilter.requireFreezeRenounced; await edit(`Freeze Renounced: ${BotState.rugFilter.requireFreezeRenounced ? '✅' : '❌'}`, settingsKeyboard()); return; }
 
   // ── MEV ──
-  if (data === 'mev_toggle') {
+  if (data === 'mev_toggle') { save();
     if (!BotState.mev) BotState.mev = {};
     BotState.mev.useJito = !BotState.mev.useJito;
     config.mev = config.mev || {};
@@ -390,14 +392,14 @@ async function handleCallback(query) {
   }
 
   // ── Toggles ──
-  if (data === 'toggle_honeypot') { BotState.honeypotCheck = !BotState.honeypotCheck; await edit(`🍯 Honeypot: ${BotState.honeypotCheck ? '✅ ON' : '❌ OFF'}`, mainKeyboard()); return; }
-  if (data === 'toggle_partialtp') {
+  if (data === 'toggle_honeypot') { save(); BotState.honeypotCheck = !BotState.honeypotCheck; await edit(`🍯 Honeypot: ${BotState.honeypotCheck ? '✅ ON' : '❌ OFF'}`, mainKeyboard()); return; }
+  if (data === 'toggle_partialtp') { save();
     if (!BotState.partialTP) BotState.partialTP = { enabled: false };
     BotState.partialTP.enabled = !BotState.partialTP.enabled;
     await edit(`🎯 Partial TP: ${BotState.partialTP.enabled ? '✅ ON' : '❌ OFF'}\n\nStages:\n• Sell 50% at 2x\n• Sell 25% at 5x\n• Sell 25% at 10x`, mainKeyboard());
     return;
   }
-  if (data === 'toggle_twitter') {
+  if (data === 'toggle_twitter') { save();
     if (!BotState.twitterCheck) BotState.twitterCheck = { enabled: false };
     BotState.twitterCheck.enabled = !BotState.twitterCheck.enabled;
     await edit(`🐦 Twitter check: ${BotState.twitterCheck.enabled ? '✅ ON' : '❌ OFF'}`, mainKeyboard());
@@ -460,7 +462,7 @@ async function handleCallback(query) {
     return;
   }
 
-  if (data === 'toggle_migrated') {
+  if (data === 'toggle_migrated') { save();
     const { getMigrationStatus, enableMigrated, disableMigrated } = require('../sniper/migrations');
     const ms = getMigrationStatus();
     if (ms.migrated.enabled) { disableMigrated(); await sendTelegramAlert('🎓 Migrated alerts: ❌ OFF'); }
@@ -468,7 +470,7 @@ async function handleCallback(query) {
     return;
   }
 
-  if (data === 'toggle_migrated_auto') {
+  if (data === 'toggle_migrated_auto') { save();
     const { getMigrationStatus, enableMigrated, disableMigrated } = require('../sniper/migrations');
     const ms = getMigrationStatus();
     const newAuto = !ms.migrated.autoBuy;
@@ -502,7 +504,7 @@ async function handleCallback(query) {
     return;
   }
 
-  if (data === 'toggle_soonmigrated') {
+  if (data === 'toggle_soonmigrated') { save();
     const { getMigrationStatus, enableSoonMigrated, disableSoonMigrated } = require('../sniper/migrations');
     const ms = getMigrationStatus();
     if (ms.soonMigrated.enabled) { disableSoonMigrated(); await sendTelegramAlert('⏳ Soon-Migrated alerts: ❌ OFF'); }
@@ -510,7 +512,7 @@ async function handleCallback(query) {
     return;
   }
 
-  if (data === 'toggle_soonmigrated_auto') {
+  if (data === 'toggle_soonmigrated_auto') { save();
     const { getMigrationStatus, enableSoonMigrated } = require('../sniper/migrations');
     const ms = getMigrationStatus();
     const newAuto = !ms.soonMigrated.autoBuy;
@@ -549,7 +551,7 @@ async function handleCallback(query) {
     return;
   }
 
-  if (data === 'toggle_bm_block') {
+  if (data === 'toggle_bm_block') { save();
     if (!BotState.bubbleMapSettings) BotState.bubbleMapSettings = { maxClusterPct: 50, minDecentScore: 0, maxTop1Pct: 30, blockRisky: false };
     BotState.bubbleMapSettings.blockRisky = !BotState.bubbleMapSettings.blockRisky;
     await sendTelegramAlert(
@@ -645,6 +647,7 @@ async function handleFreeText(msg) {
 
   const handler = handlers[waiting.type];
   const result = handler ? handler() : '❌ Unknown input';
+  save(); // persist immediately after any change
   await sendTelegramAlert(result, { reply_markup: backKeyboard });
 }
 
