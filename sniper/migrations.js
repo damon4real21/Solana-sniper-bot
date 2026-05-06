@@ -187,17 +187,56 @@ async function processMigratedToken(mint, data) {
 
   logger.info(`🎓 Processing migrated: ${symbol} (${mint.slice(0,8)}...)`);
 
-  // Fetch extra data from DexScreener
-  let liquidityUsd = 0, priceUsd = 0;
-  try {
-    const res = await resilientFetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, {}, 2);
-    const dex = await res.json();
-    const pair = (dex?.pairs || [])[0];
-    if (pair) {
-      liquidityUsd = pair.liquidity?.usd || 0;
-      priceUsd = parseFloat(pair.priceUsd || '0');
+  // Wait for DexScreener to index the token (retry up to 5x with 8s delay)
+  let liquidityUsd = 0, priceUsd = 0, retryName = name, retrySymbol = symbol;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const res = await resilientFetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, {}, 2);
+      const dex = await res.json();
+      const pair = (dex?.pairs || [])[0];
+      if (pair && (pair.liquidity?.usd || 0) > 0) {
+        liquidityUsd = pair.liquidity?.usd || 0;
+        priceUsd = parseFloat(pair.priceUsd || '0');
+        retryName = pair.baseToken?.name || name;
+        retrySymbol = pair.baseToken?.symbol || symbol;
+        logger.info(`[Migration] DEX data ready after ${attempt} attempt(s): liq=$${liquidityUsd.toFixed(0)}`);
+        break;
+      }
+      if (attempt < 5) {
+        logger.info(`[Migration] Waiting for DEX indexing... attempt ${attempt}/5`);
+        await new Promise(r => setTimeout(r, 8000)); // wait 8s between retries
+      }
+    } catch (_) {
+      if (attempt < 5) await new Promise(r => setTimeout(r, 8000));
     }
-  } catch (_) {}
+  }
+
+  // Skip if still no liquidity after all retries
+  if (liquidityUsd === 0) {
+    logger.warn(`[Migration] No liquidity found after 5 attempts — skipping ${mint.slice(0,8)}...`);
+    await sendTelegramAlert(
+      `⏭ *Migration Skipped*\n` +
+      `No liquidity data after 40s\n` +
+      `Mint: \`${mint.slice(0,16)}...\`\n` +
+      `[Check manually](https://dexscreener.com/solana/${mint})`
+    );
+    return;
+  }
+
+  // Update name/symbol with real data
+  name = retryName; symbol = retrySymbol;
+  
+  // Also enforce minimum liquidity filter
+  const minLiq = BotState.rugFilter?.minLiquidityUsd || 1000;
+  if (liquidityUsd < minLiq) {
+    logger.warn(`[Migration] Liquidity $${liquidityUsd.toFixed(0)} below minimum $${minLiq} — skipping`);
+    await sendTelegramAlert(
+      `⏭ *Migration Skipped*\n` +
+      `*${name}* (${symbol})\n` +
+      `Liquidity $${liquidityUsd.toFixed(0)} < minimum $${minLiq}`
+    );
+    return;
+  }
 
   // Rug check + BubbleMaps in parallel
   const [rugResult, bubbleAnalysis] = await Promise.allSettled([
