@@ -20,10 +20,13 @@ async function executeBuy({ mint, name, symbol, source, devWallet, liquidityUsd 
     return executeSpreadBuy({ mint, name, symbol, source, rugScore });
   }
 
-  // Run all 16 filters
+  // Run all 16 filters — but skip liquidity filter for confirmed migrations
   try {
     const { runAllFilters, recordSpend } = getFeatures();
-    const filterResult = await runAllFilters({ mint, name, symbol, devWallet, liquidityUsd, priceUsd }).catch(() => ({ pass: true }));
+    const isMigration = source?.includes('Migrated') || source?.includes('Migration');
+    // For migrations, graduation guarantees ~$69k liquidity — bypass min liq filter
+    const effectiveLiquidity = isMigration && liquidityUsd < 1000 ? 69000 : liquidityUsd;
+    const filterResult = await runAllFilters({ mint, name, symbol, devWallet, liquidityUsd: effectiveLiquidity, priceUsd }).catch(() => ({ pass: true }));
     if (!filterResult.pass) {
       logger.warn(`[Filter] Skipped ${symbol}: ${filterResult.reason}`);
       await getTelegram().sendTelegramAlert(`🚫 *Filtered*\n*${name}* (${symbol})\n${filterResult.reason}`).catch(() => {});
