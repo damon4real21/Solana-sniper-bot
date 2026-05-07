@@ -325,53 +325,76 @@ async function monitorPositions() {
   }
 }
 
-// ── pump.fun native swap ──────────────────────────────────────────
+// ── pump.fun native swap via PumpPortal API ──────────────────────
 async function buyOnPumpFun(mint, amountLamports, keypair) {
-  try {
-    const { Connection, Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
-    const conn = getConnection();
+  const { VersionedTransaction: VT, Transaction } = require('@solana/web3.js');
+  const conn = getConnection();
+  const solAmount = amountLamports / LAMPORTS_PER_SOL;
 
-    // Get pump.fun bonding curve data
-    const pfRes = await resilientFetch(
-      `https://frontend-api.pump.fun/coins/${mint}`,
-      { headers: { 'Accept': 'application/json' }, timeout: 8000 }, 2
-    );
-    if (!pfRes.ok) return null;
-    const pfData = await pfRes.json();
+  // Try pumpportal.fun trade-local API (free, no key needed)
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      logger.info(`[PumpFun] Attempt ${attempt}: buying ${solAmount} SOL of ${mint.slice(0,8)}...`);
 
-    if (!pfData.bonding_curve) return null;
+      const tradeRes = await resilientFetch('https://pumpportal.fun/api/trade-local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publicKey: keypair.publicKey.toString(),
+          action: 'buy',
+          mint: mint,
+          denominatedInSol: 'true',
+          amount: solAmount,
+          slippage: Math.min((BotState.sniper.slippageBps / 100) * attempt, 50), // increase per attempt
+          priorityFee: (BotState.sniper.priorityFeeLamports / LAMPORTS_PER_SOL) * attempt,
+          pool: 'pump',
+        }),
+      }, 2);
 
-    // Use pump.fun trade API
-    const tradeRes = await resilientFetch('https://pumpportal.fun/api/trade-local', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        publicKey: keypair.publicKey.toString(),
-        action: 'buy',
-        mint: mint,
-        denominatedInSol: 'true',
-        amount: amountLamports / LAMPORTS_PER_SOL,
-        slippage: BotState.sniper.slippageBps / 100,
-        priorityFee: BotState.sniper.priorityFeeLamports / LAMPORTS_PER_SOL,
-        pool: 'pump',
-      }),
-    }, 2);
+      if (!tradeRes.ok) {
+        logger.warn(`[PumpFun] API returned ${tradeRes.status} — attempt ${attempt}`);
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
 
-    if (!tradeRes.ok) return null;
-    const txBuf = Buffer.from(await tradeRes.arrayBuffer());
-    const tx = Transaction.from(txBuf);
-    tx.sign(keypair);
+      const txBuf = Buffer.from(await tradeRes.arrayBuffer());
+      if (txBuf.length === 0) { logger.warn('[PumpFun] Empty tx buffer'); continue; }
 
-    const sig = await conn.sendRawTransaction(tx.serialize(), {
-      skipPreflight: false, maxRetries: 3,
-    });
-    await conn.confirmTransaction(sig, 'confirmed');
-    logger.success(`[pump.fun swap] TX: ${sig.slice(0,12)}...`);
-    return sig;
-  } catch (err) {
-    logger.error('[pump.fun swap] Error:', err.message);
-    return null;
+      // Try VersionedTransaction first, fall back to legacy
+      let tx;
+      try { tx = VT.deserialize(txBuf); tx.sign([keypair]); }
+      catch (_) { tx = Transaction.from(txBuf); tx.sign(keypair); }
+
+      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('confirmed');
+      if (tx.message?.recentBlockhash !== undefined) tx.message.recentBlockhash = blockhash;
+
+      const sig = await conn.sendRawTransaction(tx.serialize(), {
+        skipPreflight: true, // CRITICAL — skip simulation for fast pump.fun tokens
+        maxRetries: 0,
+      });
+
+      // Confirm with timeout
+      const confirmation = await Promise.race([
+        conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 30000)),
+      ]);
+
+      if (confirmation?.value?.err) {
+        logger.warn(`[PumpFun] TX failed on-chain: ${JSON.stringify(confirmation.value.err)}`);
+        continue;
+      }
+
+      logger.success(`[PumpFun] ✅ Buy confirmed: ${sig.slice(0,12)}...`);
+      return sig;
+
+    } catch (err) {
+      logger.warn(`[PumpFun] Attempt ${attempt} error: ${err.message?.slice(0,80)}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 2000 * attempt));
+    }
   }
+
+  logger.error('[PumpFun] All 3 attempts failed');
+  return null;
 }
 
 module.exports = { executeBuy, executeSell };
