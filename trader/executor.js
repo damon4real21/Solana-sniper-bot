@@ -38,7 +38,10 @@ async function executeBuy({ mint, name, symbol, source, devWallet, liquidityUsd 
   const pubkey = getPublicKey();
   const amountLamports = Math.floor(BotState.sniper.buyAmountSol * LAMPORTS_PER_SOL);
 
-  logger.trade(`BUY: ${symbol} | ${source} | ${BotState.sniper.buyAmountSol} SOL`);
+  // Detect if token is still on pump.fun AMM (CA ends with 'pump')
+  const isPumpFunToken = mint.endsWith('pump') || source?.toLowerCase().includes('pump');
+  
+  logger.trade(`BUY: ${symbol} | ${source} | ${BotState.sniper.buyAmountSol} SOL | pump:${isPumpFunToken}`);
 
   // 🔔 Pre-buy alert with full CA details
   await getTelegram().sendTelegramAlert(
@@ -55,6 +58,14 @@ async function executeBuy({ mint, name, symbol, source, devWallet, liquidityUsd 
   ).catch(() => {});
 
   try {
+    // For pump.fun tokens use their native swap API
+    if (isPumpFunToken) {
+      logger.info('[Executor] Token is on pump.fun AMM — using pump.fun swap');
+      const pfResult = await buyOnPumpFun(mint, amountLamports, keypair);
+      if (pfResult) return pfResult;
+      logger.warn('[Executor] pump.fun swap failed — falling back to Jupiter');
+    }
+
     const jupBase = getJupiterBase();
     const quoteUrl = `${jupBase}/quote?` + new URLSearchParams({
       inputMint: WSOL,
@@ -236,6 +247,55 @@ async function monitorPositions() {
         await executeSell(mint, `Stop Loss -${dropPct.toFixed(1)}%`);
       }
     } catch (_) {}
+  }
+}
+
+// ── pump.fun native swap ──────────────────────────────────────────
+async function buyOnPumpFun(mint, amountLamports, keypair) {
+  try {
+    const { Connection, Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
+    const conn = getConnection();
+
+    // Get pump.fun bonding curve data
+    const pfRes = await resilientFetch(
+      `https://frontend-api.pump.fun/coins/${mint}`,
+      { headers: { 'Accept': 'application/json' }, timeout: 8000 }, 2
+    );
+    if (!pfRes.ok) return null;
+    const pfData = await pfRes.json();
+
+    if (!pfData.bonding_curve) return null;
+
+    // Use pump.fun trade API
+    const tradeRes = await resilientFetch('https://pumpportal.fun/api/trade-local', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publicKey: keypair.publicKey.toString(),
+        action: 'buy',
+        mint: mint,
+        denominatedInSol: 'true',
+        amount: amountLamports / LAMPORTS_PER_SOL,
+        slippage: BotState.sniper.slippageBps / 100,
+        priorityFee: BotState.sniper.priorityFeeLamports / LAMPORTS_PER_SOL,
+        pool: 'pump',
+      }),
+    }, 2);
+
+    if (!tradeRes.ok) return null;
+    const txBuf = Buffer.from(await tradeRes.arrayBuffer());
+    const tx = Transaction.from(txBuf);
+    tx.sign(keypair);
+
+    const sig = await conn.sendRawTransaction(tx.serialize(), {
+      skipPreflight: false, maxRetries: 3,
+    });
+    await conn.confirmTransaction(sig, 'confirmed');
+    logger.success(`[pump.fun swap] TX: ${sig.slice(0,12)}...`);
+    return sig;
+  } catch (err) {
+    logger.error('[pump.fun swap] Error:', err.message);
+    return null;
   }
 }
 
