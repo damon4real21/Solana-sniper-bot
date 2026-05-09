@@ -1,4 +1,4 @@
-const { VersionedTransaction, LAMPORTS_PER_SOL } = require('@solana/web3.js');
+const { VersionedTransaction, Transaction, LAMPORTS_PER_SOL } = require('@solana/web3.js');
 const { getConnection, getKeypair, getPublicKey, getTokenBalance } = require('../utils/wallet');
 const { sendWithMevProtection } = require('../security/mev');
 const { BotState } = require('../utils/state');
@@ -10,21 +10,37 @@ const getFeatures = () => require('../features/features16');
 
 const WSOL = 'So11111111111111111111111111111111111111112';
 
-// Position monitor every 15s
+// Monitor positions every 15s
 setInterval(monitorPositions, 15000);
 
+// ─────────────────────────────────────────────────────────────────
+// DETECT TOKEN TYPE
+// ─────────────────────────────────────────────────────────────────
+function isPumpFunToken(mint, source) {
+  return (
+    mint?.endsWith('pump') ||
+    source?.toLowerCase().includes('pump.fun') ||
+    source?.toLowerCase().includes('pumpfun') ||
+    source?.toLowerCase().includes('soon migrated') ||
+    source?.toLowerCase().includes('migrated')
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// MAIN BUY ENTRY POINT
+// ─────────────────────────────────────────────────────────────────
 async function executeBuy({ mint, name, symbol, source, devWallet, liquidityUsd = 0, priceUsd = 0, rugScore = 0 }) {
+
   // Multi-wallet spread
   if (BotState.multiWallet?.enabled && BotState.multiWallet.wallets?.length > 0) {
     const { executeSpreadBuy } = require('../features/multiwallet');
     return executeSpreadBuy({ mint, name, symbol, source, rugScore });
   }
 
-  // Run all 16 filters — but skip liquidity filter for confirmed migrations
+  // Run filters (skip liquidity check for migrations)
   try {
     const { runAllFilters, recordSpend } = getFeatures();
-    const isMigration = source?.includes('Migrated') || source?.includes('Migration');
-    // For migrations, graduation guarantees ~$69k liquidity — bypass min liq filter
+    const isMigration = source?.includes('Migrated');
     const effectiveLiquidity = isMigration && liquidityUsd < 1000 ? 69000 : liquidityUsd;
     const filterResult = await runAllFilters({ mint, name, symbol, devWallet, liquidityUsd: effectiveLiquidity, priceUsd }).catch(() => ({ pass: true }));
     if (!filterResult.pass) {
@@ -37,161 +53,226 @@ async function executeBuy({ mint, name, symbol, source, devWallet, liquidityUsd 
   const keypair = getKeypair();
   const pubkey = getPublicKey();
   const amountLamports = Math.floor(BotState.sniper.buyAmountSol * LAMPORTS_PER_SOL);
+  const usePumpSwap = isPumpFunToken(mint, source);
 
-  // Detect if token is still on pump.fun AMM (CA ends with 'pump')
-  const isPumpFunToken = mint.endsWith('pump') || source?.toLowerCase().includes('pump');
-  
-  logger.trade(`BUY: ${symbol} | ${source} | ${BotState.sniper.buyAmountSol} SOL | pump:${isPumpFunToken}`);
+  logger.trade(`BUY: ${symbol} | ${source} | ${BotState.sniper.buyAmountSol} SOL | router: ${usePumpSwap ? 'PumpSwap' : 'Jupiter'}`);
 
-  // 🔔 Pre-buy alert with full CA details
+  // Pre-buy Telegram alert
   await getTelegram().sendTelegramAlert(
     `⚡ *Attempting Buy...*\n\n` +
     `*${name}* (${symbol})\n` +
     `Source: ${source}\n` +
-    `Spending: *${BotState.sniper.buyAmountSol} SOL*\n\n` +
-    `📋 *Contract Address (CA):*\n` +
-    `\`${mint}\`\n\n` +
-    `🔗 [DexScreener](https://dexscreener.com/solana/${mint}) | [Solscan](https://solscan.io/token/${mint})\n` +
-    `[pump.fun](https://pump.fun/${mint}) | [Birdeye](https://birdeye.so/token/${mint})\n\n` +
-    `Rug Score: ${rugScore}/100 | Liq: $${liquidityUsd.toFixed(0)}\n` +
-    `_Processing swap..._`
+    `Spending: *${BotState.sniper.buyAmountSol} SOL*\n` +
+    `Router: ${usePumpSwap ? '🟣 PumpSwap' : '🔵 Jupiter'}\n\n` +
+    `📋 *CA:*\n\`${mint}\`\n\n` +
+    `🔗 [DexScreener](https://dexscreener.com/solana/${mint}) | [pump.fun](https://pump.fun/${mint})\n` +
+    `Rug: ${rugScore}/100 | Liq: $${liquidityUsd.toFixed(0)}\n` +
+    `_Processing..._`
   ).catch(() => {});
 
-  try {
-    // For pump.fun tokens use their native swap API
-    if (isPumpFunToken) {
-      logger.info('[Executor] Token is on pump.fun AMM — using pump.fun swap');
-      const pfResult = await buyOnPumpFun(mint, amountLamports, keypair);
-      if (pfResult) return pfResult;
-      logger.warn('[Executor] pump.fun swap failed — falling back to Jupiter');
-    }
-
-    const jupBase = getJupiterBase();
-    const quoteUrl = `${jupBase}/quote?` + new URLSearchParams({
-      inputMint: WSOL,
-      outputMint: mint,
-      amount: amountLamports,
-      slippageBps: BotState.sniper.slippageBps,
-      onlyDirectRoutes: 'false',
-    });
-
-    // Resilient fetch with auto-retry + endpoint rotation
-    const quoteRes = await resilientFetch(quoteUrl, {}, 3);
-    if (!quoteRes.ok) throw new Error(`Quote failed: ${quoteRes.status}`);
-    const quote = await quoteRes.json();
-    if (quote.error) throw new Error(quote.error);
-
-    const priceImpact = parseFloat(quote.priceImpactPct || '0');
-    if (priceImpact > BotState.sniper.maxPriceImpact) throw new Error(`Price impact too high: ${priceImpact.toFixed(2)}%`);
-    const outAmount = parseInt(quote.outAmount || '0');
-
-    const swapRes = await resilientFetch(`${jupBase}/swap`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        quoteResponse: quote,
-        userPublicKey: pubkey.toString(),
-        wrapAndUnwrapSol: true,
-        dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: BotState.sniper.priorityFeeLamports,
-      }),
-    }, 3);
-
-    const swapData = await swapRes.json();
-    if (swapData.error) throw new Error(swapData.error);
-
-    const tx = VersionedTransaction.deserialize(Buffer.from(swapData.swapTransaction, 'base64'));
-    tx.sign([keypair]);
-    // Use skipPreflight for pump.fun tokens — simulation too slow for fast movers
-    let sig;
-    if (isPumpFunToken) {
-      const conn = getConnection();
-      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('confirmed');
-      tx.message.recentBlockhash = blockhash;
-      tx.sign([keypair]);
-      sig = await conn.sendRawTransaction(tx.serialize(), {
-        skipPreflight: true,
-        maxRetries: 2,
-        preflightCommitment: 'confirmed',
-      });
-      await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
-    } else {
-      sig = await sendWithMevProtection(tx);
-    }
-
-    const buyPrice = priceUsd || (BotState.sniper.buyAmountSol / (outAmount / 1e9));
-    BotState.addPosition(mint, { mint, name, symbol, source, buyPrice, buySol: BotState.sniper.buyAmountSol, outAmount, sig, rugScore, devWallet });
-    BotState.stats.sniped++;
-
-    // Record spend for budget tracking
-    try { getFeatures().recordSpend(BotState.sniper.buyAmountSol); } catch (_) {}
-
-    // Start dev tracker
-    if (devWallet) {
-      try { const { trackDevWallet } = require('../features/devtracker'); trackDevWallet(mint, devWallet); } catch (_) {}
-    }
-
-    await getTelegram().sendTelegramAlert(
-      `✅ *SNIPED!*\n*${name}* (${symbol})\nSource: ${source}\n` +
-      `Spent: ${BotState.sniper.buyAmountSol} SOL\nGot: ${(outAmount/1e9).toFixed(4)} tokens\n` +
-      `Impact: ${priceImpact.toFixed(2)}% | Rug: ${rugScore}/100\n` +
-      `TX: [View](https://solscan.io/tx/${sig})`
-    ).catch(() => {});
-
-    logger.trade(`✅ BUY OK: ${symbol} | ${sig?.slice(0,12)}...`);
-    return sig;
-  } catch (err) {
-    // Auto-retry with higher slippage if slippage exceeded
-    if (err.message?.includes('0x177e') || err.message?.includes('Slippage') || err.message?.includes('slippage')) {
-      logger.warn(`[Retry] Slippage exceeded for ${symbol} — retrying with ${BotState.sniper.slippageBps * 2} bps`);
-      try {
-        const higherSlippage = Math.min(BotState.sniper.slippageBps * 2, 5000); // max 50%
-        const jupBase2 = getJupiterBase();
-        const retryQuoteUrl = `${jupBase2}/quote?` + new URLSearchParams({
-          inputMint: WSOL, outputMint: mint,
-          amount: amountLamports, slippageBps: higherSlippage,
-          onlyDirectRoutes: 'false',
-        });
-        const rq = await resilientFetch(retryQuoteUrl, {}, 2);
-        const rQuote = await rq.json();
-        if (!rQuote.error) {
-          const rs = await resilientFetch(`${jupBase2}/swap`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              quoteResponse: rQuote, userPublicKey: pubkey.toString(),
-              wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true,
-              prioritizationFeeLamports: BotState.sniper.priorityFeeLamports * 2,
-            }),
-          }, 2);
-          const rData = await rs.json();
-          if (!rData.error) {
-            const rTx = VersionedTransaction.deserialize(Buffer.from(rData.swapTransaction, 'base64'));
-            rTx.sign([keypair]);
-            const conn2 = getConnection();
-            const { blockhash: rb, lastValidBlockHeight: rlvh } = await conn2.getLatestBlockhash('confirmed');
-            const rSig = await conn2.sendRawTransaction(rTx.serialize(), { skipPreflight: true, maxRetries: 3 });
-            await conn2.confirmTransaction({ signature: rSig, blockhash: rb, lastValidBlockHeight: rlvh }, 'confirmed');
-            logger.trade(`✅ Retry BUY OK: ${symbol} | ${rSig?.slice(0,12)}...`);
-            BotState.addPosition(mint, { mint, name, symbol, source, buyPrice: priceUsd || 0, buySol: BotState.sniper.buyAmountSol, outAmount: rQuote.outAmount, sig: rSig, rugScore });
-            BotState.stats.sniped++;
-            try { getFeatures().recordSpend(BotState.sniper.buyAmountSol); } catch (_) {}
-            await getTelegram().sendTelegramAlert(`✅ *SNIPED (retry)!*\n*${name}* (${symbol})\nSlippage retried at ${higherSlippage/100}%\nTX: [View](https://solscan.io/tx/${rSig})`).catch(() => {});
-            return rSig;
-          }
-        }
-      } catch (retryErr) {
-        logger.error(`Retry also failed: ${retryErr.message}`);
-      }
-    }
-
-    logger.error(`BUY failed (${symbol}):`, err.message);
-    // Only show short error — not the full program log spam
-    const shortErr = err.message?.split('\n')[0]?.slice(0, 100) || err.message;
-    await getTelegram().sendTelegramAlert(`❌ *Buy Failed*\n*${name}* (${symbol})\n${shortErr}`).catch(() => {});
-    return null;
+  // Route to correct swap
+  let sig = null;
+  if (usePumpSwap) {
+    sig = await swapOnPump(mint, amountLamports, keypair, name, symbol);
+  } else {
+    sig = await swapOnJupiter(mint, amountLamports, keypair, pubkey, name, symbol, priceUsd, rugScore, source);
   }
+
+  if (!sig) return null;
+
+  // Record position
+  BotState.addPosition(mint, {
+    mint, name, symbol, source,
+    buyPrice: priceUsd || BotState.sniper.buyAmountSol,
+    buySol: BotState.sniper.buyAmountSol,
+    sig, rugScore, devWallet,
+  });
+  BotState.stats.sniped++;
+  try { getFeatures().recordSpend(BotState.sniper.buyAmountSol); } catch (_) {}
+  if (devWallet) {
+    try { const { trackDevWallet } = require('../features/devtracker'); trackDevWallet(mint, devWallet); } catch (_) {}
+  }
+
+  await getTelegram().sendTelegramAlert(
+    `✅ *SNIPED!*\n` +
+    `*${name}* (${symbol})\n` +
+    `Source: ${source}\n` +
+    `Spent: ${BotState.sniper.buyAmountSol} SOL\n` +
+    `Rug: ${rugScore}/100\n` +
+    `TX: [View](https://solscan.io/tx/${sig})`
+  ).catch(() => {});
+
+  return sig;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// PUMP.FUN SWAP — for all pump.fun bonding curve tokens
+// Uses pumpportal.fun API — completely separate from Jupiter
+// ─────────────────────────────────────────────────────────────────
+async function swapOnPump(mint, amountLamports, keypair, name, symbol) {
+  const conn = getConnection();
+  const solAmount = amountLamports / LAMPORTS_PER_SOL;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const slippage = Math.min(25 * attempt, 50); // 25%, 50%, 50%
+    const priorityFee = (BotState.sniper.priorityFeeLamports / LAMPORTS_PER_SOL) * attempt;
+
+    logger.info(`[PumpSwap] Attempt ${attempt}/3 | SOL: ${solAmount} | Slip: ${slippage}% | Fee: ${priorityFee}`);
+
+    try {
+      const res = await resilientFetch('https://pumpportal.fun/api/trade-local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publicKey: keypair.publicKey.toString(),
+          action: 'buy',
+          mint: mint,
+          denominatedInSol: 'true',
+          amount: solAmount,
+          slippage: slippage,
+          priorityFee: priorityFee,
+          pool: 'pump',
+        }),
+      }, 2);
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => res.status);
+        logger.warn(`[PumpSwap] API error ${res.status}: ${errText}`);
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+
+      const txBuf = Buffer.from(await res.arrayBuffer());
+      if (txBuf.length < 10) {
+        logger.warn(`[PumpSwap] Empty response — token may not be on bonding curve`);
+        continue;
+      }
+
+      // Deserialize transaction
+      let tx;
+      try {
+        tx = VersionedTransaction.deserialize(txBuf);
+        tx.sign([keypair]);
+      } catch (_) {
+        try {
+          tx = Transaction.from(txBuf);
+          tx.sign(keypair);
+        } catch (e) {
+          logger.warn(`[PumpSwap] TX deserialize failed: ${e.message}`);
+          continue;
+        }
+      }
+
+      // Send with skipPreflight — critical for bonding curve tokens
+      const sig = await conn.sendRawTransaction(tx.serialize(), {
+        skipPreflight: true,
+        maxRetries: 0,
+      });
+
+      logger.info(`[PumpSwap] TX sent: ${sig.slice(0, 12)}... confirming...`);
+
+      // Confirm with 30s timeout
+      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('confirmed');
+      const result = await Promise.race([
+        conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('30s timeout')), 30000)),
+      ]);
+
+      if (result?.value?.err) {
+        logger.warn(`[PumpSwap] On-chain error: ${JSON.stringify(result.value.err)}`);
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+
+      logger.trade(`✅ [PumpSwap] Success: ${sig.slice(0, 12)}...`);
+      return sig;
+
+    } catch (err) {
+      logger.warn(`[PumpSwap] Attempt ${attempt} failed: ${err.message?.slice(0, 100)}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 2000 * attempt));
+    }
+  }
+
+  logger.error(`[PumpSwap] All attempts failed for ${symbol}`);
+  await getTelegram().sendTelegramAlert(
+    `❌ *PumpSwap Failed*\n*${name}* (${symbol})\n` +
+    `Token may have already graduated or bonding curve full\n` +
+    `[Check manually](https://pump.fun/${mint})`
+  ).catch(() => {});
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// JUPITER SWAP — for Raydium and DexScreener tokens ONLY
+// ─────────────────────────────────────────────────────────────────
+async function swapOnJupiter(mint, amountLamports, keypair, pubkey, name, symbol, priceUsd, rugScore, source) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const slippage = BotState.sniper.slippageBps * attempt; // increase per retry
+    const priorityFee = BotState.sniper.priorityFeeLamports * attempt;
+
+    logger.info(`[Jupiter] Attempt ${attempt}/3 | Slip: ${slippage / 100}% | Fee: ${priorityFee}`);
+
+    try {
+      const jupBase = getJupiterBase();
+
+      const quoteUrl = `${jupBase}/quote?` + new URLSearchParams({
+        inputMint: WSOL,
+        outputMint: mint,
+        amount: amountLamports,
+        slippageBps: slippage,
+        onlyDirectRoutes: 'false',
+      });
+
+      const quoteRes = await resilientFetch(quoteUrl, {}, 2);
+      if (!quoteRes.ok) { await new Promise(r => setTimeout(r, 2000)); continue; }
+      const quote = await quoteRes.json();
+      if (quote.error) { logger.warn(`[Jupiter] Quote error: ${quote.error}`); continue; }
+
+      const impact = parseFloat(quote.priceImpactPct || '0');
+      if (impact > BotState.sniper.maxPriceImpact) {
+        logger.warn(`[Jupiter] Price impact too high: ${impact.toFixed(2)}%`);
+        break;
+      }
+
+      const swapRes = await resilientFetch(`${jupBase}/swap`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          quoteResponse: quote,
+          userPublicKey: pubkey.toString(),
+          wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: true,
+          prioritizationFeeLamports: priorityFee,
+        }),
+      }, 2);
+
+      const swapData = await swapRes.json();
+      if (swapData.error) { logger.warn(`[Jupiter] Swap error: ${swapData.error}`); continue; }
+
+      const tx = VersionedTransaction.deserialize(Buffer.from(swapData.swapTransaction, 'base64'));
+      tx.sign([keypair]);
+      const sig = await sendWithMevProtection(tx);
+
+      logger.trade(`✅ [Jupiter] Success: ${sig?.slice(0, 12)}...`);
+      return sig;
+
+    } catch (err) {
+      logger.warn(`[Jupiter] Attempt ${attempt} failed: ${err.message?.slice(0, 100)}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 2000 * attempt));
+    }
+  }
+
+  logger.error(`[Jupiter] All attempts failed for ${symbol}`);
+  await getTelegram().sendTelegramAlert(
+    `❌ *Jupiter Swap Failed*\n*${name}* (${symbol})\n` +
+    `Try checking token on DexScreener`
+  ).catch(() => {});
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// SELL — always uses Jupiter (selling back to SOL)
+// ─────────────────────────────────────────────────────────────────
 async function executeSell(mint, reason = 'Manual') {
   const position = BotState.positions.get(mint);
   if (!position) return;
@@ -206,76 +287,104 @@ async function executeSell(mint, reason = 'Manual') {
     const tokenBalRaw = Math.floor(tokenBal * 1e9);
     const jupBase = getJupiterBase();
 
-    const quoteUrl = `${jupBase}/quote?` + new URLSearchParams({
-      inputMint: mint, outputMint: WSOL,
-      amount: tokenBalRaw,
-      slippageBps: BotState.sniper.slippageBps + 200,
-    });
-
-    const quote = await (await resilientFetch(quoteUrl, {}, 3)).json();
-    if (quote.error) throw new Error(quote.error);
-
-    const swapData = await (await resilientFetch(`${jupBase}/swap`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        quoteResponse: quote,
-        userPublicKey: pubkey.toString(),
-        wrapAndUnwrapSol: true,
-        dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: BotState.sniper.priorityFeeLamports,
-      }),
-    }, 3)).json();
-
-    if (swapData.error) throw new Error(swapData.error);
-
-    const tx = VersionedTransaction.deserialize(Buffer.from(swapData.swapTransaction, 'base64'));
-    tx.sign([keypair]);
-    // Use skipPreflight for pump.fun tokens — simulation too slow for fast movers
+    // For pump.fun tokens that haven't graduated — use pump sell
+    const usePumpSell = isPumpFunToken(mint, position.source);
     let sig;
-    if (isPumpFunToken) {
-      const conn = getConnection();
-      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('confirmed');
-      tx.message.recentBlockhash = blockhash;
-      tx.sign([keypair]);
-      sig = await conn.sendRawTransaction(tx.serialize(), {
-        skipPreflight: true,
-        maxRetries: 2,
-        preflightCommitment: 'confirmed',
+
+    if (usePumpSell) {
+      sig = await sellOnPump(mint, tokenBalRaw, keypair, position);
+    }
+
+    if (!sig) {
+      // Fall back to Jupiter sell for all tokens
+      const quoteUrl = `${jupBase}/quote?` + new URLSearchParams({
+        inputMint: mint,
+        outputMint: WSOL,
+        amount: tokenBalRaw,
+        slippageBps: BotState.sniper.slippageBps + 500,
       });
-      await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
-    } else {
+
+      const quote = await (await resilientFetch(quoteUrl, {}, 3)).json();
+      if (quote.error) throw new Error(quote.error);
+
+      const swapData = await (await resilientFetch(`${jupBase}/swap`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          quoteResponse: quote,
+          userPublicKey: pubkey.toString(),
+          wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: true,
+          prioritizationFeeLamports: BotState.sniper.priorityFeeLamports * 2,
+        }),
+      }, 3)).json();
+
+      if (swapData.error) throw new Error(swapData.error);
+      const tx = VersionedTransaction.deserialize(Buffer.from(swapData.swapTransaction, 'base64'));
+      tx.sign([keypair]);
       sig = await sendWithMevProtection(tx);
     }
 
-    const receivedSol = parseInt(quote.outAmount || '0') / LAMPORTS_PER_SOL;
+    const receivedSol = parseInt(sig?.outAmount || '0') / LAMPORTS_PER_SOL || BotState.sniper.buyAmountSol;
     const pnlSol = receivedSol - position.buySol;
     const pnlPct = ((pnlSol / position.buySol) * 100).toFixed(1);
     const emoji = pnlSol >= 0 ? '🟢' : '🔴';
 
-    // Record daily trade
     try { getFeatures().recordDailyTrade({ mint, name: position.name, symbol: position.symbol, pnlSol, ts: Date.now() }); } catch (_) {}
-
     BotState.addTrade({ mint, name: position.name, symbol: position.symbol, pnlSol, pnlPct, reason, sig, ts: Date.now() });
     BotState.removePosition(mint);
-
-    // Stop dev tracker
     try { const { stopTrackingMint } = require('../features/devtracker'); stopTrackingMint(mint); } catch (_) {}
 
     await getTelegram().sendTelegramAlert(
       `${emoji} *SOLD!*\n*${position.name}* (${position.symbol})\n` +
-      `Reason: ${reason}\nReceived: ${receivedSol.toFixed(4)} SOL\n` +
-      `P&L: ${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)} SOL (${pnlPct >= 0 ? '+' : ''}${pnlPct}%)\n` +
+      `Reason: ${reason}\n` +
+      `P&L: ${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)} SOL (${pnlPct}%)\n` +
       `TX: [View](https://solscan.io/tx/${sig})`
     ).catch(() => {});
 
-    logger.trade(`SELL ${position.symbol} | ${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)} SOL | ${reason}`);
   } catch (err) {
-    logger.error(`SELL failed (${mint?.slice(0,8)}):`, err.message);
-    await getTelegram().sendTelegramAlert(`❌ *Sell Failed*\n\`${mint?.slice(0,12)}...\`\n${err.message}`).catch(() => {});
+    logger.error(`SELL failed (${mint?.slice(0, 8)}):`, err.message);
+    await getTelegram().sendTelegramAlert(`❌ *Sell Failed*\n\`${mint?.slice(0, 12)}...\`\n${err.message?.slice(0, 100)}`).catch(() => {});
   }
 }
 
+// Pump.fun sell
+async function sellOnPump(mint, tokenAmount, keypair, position) {
+  try {
+    const conn = getConnection();
+    const res = await resilientFetch('https://pumpportal.fun/api/trade-local', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publicKey: keypair.publicKey.toString(),
+        action: 'sell',
+        mint: mint,
+        denominatedInSol: 'false',
+        amount: tokenAmount,
+        slippage: 25,
+        priorityFee: BotState.sniper.priorityFeeLamports / LAMPORTS_PER_SOL,
+        pool: 'pump',
+      }),
+    }, 2);
+
+    if (!res.ok) return null;
+    const txBuf = Buffer.from(await res.arrayBuffer());
+    if (txBuf.length < 10) return null;
+
+    let tx;
+    try { tx = VersionedTransaction.deserialize(txBuf); tx.sign([keypair]); }
+    catch (_) { tx = Transaction.from(txBuf); tx.sign(keypair); }
+
+    const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 2 });
+    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('confirmed');
+    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+    return sig;
+  } catch (_) { return null; }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POSITION MONITOR
+// ─────────────────────────────────────────────────────────────────
 async function monitorPositions() {
   if (!BotState.autoSell?.enabled || BotState.positions.size === 0) return;
 
@@ -293,29 +402,25 @@ async function monitorPositions() {
       const multiple = currentPrice / pos.buyPrice;
       const dropPct = ((pos.buyPrice - currentPrice) / pos.buyPrice) * 100;
 
-      // Update trailing stop peak
       try {
         const { updateTrailingStop, checkTrailingStop, checkPartialTakeProfit } = getFeatures();
         updateTrailingStop(mint, currentPrice);
 
-        // Partial take profit
         if (BotState.partialTP?.enabled) {
           const partial = await checkPartialTakeProfit(mint, currentPrice, pos.buyPrice);
           if (partial?.shouldSell) {
             await getTelegram().sendTelegramAlert(`🎯 *Partial TP!*\n*${pos.symbol}* hit ${partial.multiple}x\nSelling ${partial.pct}%`).catch(() => {});
-            await executeSell(mint, `Partial TP ${partial.multiple}x (${partial.pct}%)`);
+            await executeSell(mint, `Partial TP ${partial.multiple}x`);
             continue;
           }
         }
 
-        // Trailing stop
         if (BotState.trailingStopPct > 0 && checkTrailingStop(mint, currentPrice)) {
-          await executeSell(mint, `Trailing Stop -${BotState.trailingStopPct}% from peak`);
+          await executeSell(mint, `Trailing Stop -${BotState.trailingStopPct}%`);
           continue;
         }
       } catch (_) {}
 
-      // Fixed take profit
       if (multiple >= BotState.autoSell.takeProfitMultiplier) {
         await executeSell(mint, `Take Profit ${multiple.toFixed(2)}x`);
       } else if (dropPct >= BotState.autoSell.stopLossPct) {
@@ -323,78 +428,6 @@ async function monitorPositions() {
       }
     } catch (_) {}
   }
-}
-
-// ── pump.fun native swap via PumpPortal API ──────────────────────
-async function buyOnPumpFun(mint, amountLamports, keypair) {
-  const { VersionedTransaction: VT, Transaction } = require('@solana/web3.js');
-  const conn = getConnection();
-  const solAmount = amountLamports / LAMPORTS_PER_SOL;
-
-  // Try pumpportal.fun trade-local API (free, no key needed)
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      logger.info(`[PumpFun] Attempt ${attempt}: buying ${solAmount} SOL of ${mint.slice(0,8)}...`);
-
-      const tradeRes = await resilientFetch('https://pumpportal.fun/api/trade-local', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          publicKey: keypair.publicKey.toString(),
-          action: 'buy',
-          mint: mint,
-          denominatedInSol: 'true',
-          amount: solAmount,
-          slippage: Math.min((BotState.sniper.slippageBps / 100) * attempt, 50), // increase per attempt
-          priorityFee: (BotState.sniper.priorityFeeLamports / LAMPORTS_PER_SOL) * attempt,
-          pool: 'pump',
-        }),
-      }, 2);
-
-      if (!tradeRes.ok) {
-        logger.warn(`[PumpFun] API returned ${tradeRes.status} — attempt ${attempt}`);
-        await new Promise(r => setTimeout(r, 1000));
-        continue;
-      }
-
-      const txBuf = Buffer.from(await tradeRes.arrayBuffer());
-      if (txBuf.length === 0) { logger.warn('[PumpFun] Empty tx buffer'); continue; }
-
-      // Try VersionedTransaction first, fall back to legacy
-      let tx;
-      try { tx = VT.deserialize(txBuf); tx.sign([keypair]); }
-      catch (_) { tx = Transaction.from(txBuf); tx.sign(keypair); }
-
-      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('confirmed');
-      if (tx.message?.recentBlockhash !== undefined) tx.message.recentBlockhash = blockhash;
-
-      const sig = await conn.sendRawTransaction(tx.serialize(), {
-        skipPreflight: true, // CRITICAL — skip simulation for fast pump.fun tokens
-        maxRetries: 0,
-      });
-
-      // Confirm with timeout
-      const confirmation = await Promise.race([
-        conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 30000)),
-      ]);
-
-      if (confirmation?.value?.err) {
-        logger.warn(`[PumpFun] TX failed on-chain: ${JSON.stringify(confirmation.value.err)}`);
-        continue;
-      }
-
-      logger.success(`[PumpFun] ✅ Buy confirmed: ${sig.slice(0,12)}...`);
-      return sig;
-
-    } catch (err) {
-      logger.warn(`[PumpFun] Attempt ${attempt} error: ${err.message?.slice(0,80)}`);
-      if (attempt < 3) await new Promise(r => setTimeout(r, 2000 * attempt));
-    }
-  }
-
-  logger.error('[PumpFun] All 3 attempts failed');
-  return null;
 }
 
 module.exports = { executeBuy, executeSell };
